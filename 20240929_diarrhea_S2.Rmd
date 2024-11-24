@@ -1,0 +1,139 @@
+---
+title: "20240929_diarrhea_S2"
+output: html_document
+date: "`r Sys.Date()`"
+---
+```{r setup, include=FALSE}
+  knitr::opts_chunk$set(echo = TRUE)
+  library(curatedMetagenomicData)
+  library(pheatmap)
+  library(Hmisc)
+  library(stringr)
+  library(MCL) 
+  #library(mina) # v 1.8.0
+```
+
+## Introduction
+
+We will assess the correlation between species across healthy control (HC) samples and non-HC from the diarrhea dataset. 
+
+```{r data_import_and_filter, echo=FALSE, warning=FALSE, message=FALSE}
+  diarrheaStudy <- readRDS("20240922_diarrhea_comp_profile.rds")
+  ra_mat <- assay(diarrheaStudy)
+  metadata <- colData(diarrheaStudy)
+  
+  metadata$Sample_ID <- rownames(metadata)
+  
+  taxa <- str_split_fixed(rownames(ra_mat), "\\|", 7)
+  colnames(taxa) <- c("Kingdom", "Phylum", "Class", "Order", "Family",
+                            "Genus", "Species")
+  rownames(taxa) <- rownames(ra_mat)
+```
+
+### Correlation between microbial species 
+
+Get the correlation coefficient adjacency matrix.
+
+
+```{r filter_rare, echo=FALSE, warning=FALSE, message=FALSE}
+  n_sample <- ncol(ra_mat)
+  n_sample_filter <- round(n_sample/20)
+  
+  ra_mat_filter1 <- ra_mat[rowSums(ra_mat > 0) > n_sample_filter, ]
+  ra_mat_filter2 <- ra_mat[rowSums(ra_mat) / n_sample > 0.00001, ]
+  
+  pass_filter <- intersect(rownames(ra_mat_filter1), rownames(ra_mat_filter2))
+  
+  ra_mat_filter <- ra_mat[pass_filter, ]
+  
+  #dim(ra_mat_filter)
+  
+  ## re-normalize the relative abundance by column
+  ra_mat_filter <-  as.matrix(apply(ra_mat_filter, 2, function(x) x/sum(x)))
+  
+```
+
+```{r corr, echo=FALSE, warning=FALSE, message=FALSE, fig.width=12, fig.height=10}
+  ra_corr <- rcorr(t(ra_mat_filter), type = "spearman")
+  
+  ## correlation matrix
+  mat_cor <- ra_corr$r
+  ## significance matrix
+  sig_cor <- ra_corr$P
+  
+  ## filter out the strong (abs > 0.6) and significant (P < 0.01) correlation
+  mat_cor[abs(mat_cor) < 0.6] <- 0
+  mat_cor[sig_cor > 0.01] <- 0
+  diag(mat_cor) <- 0 
+  
+  mat_cor_filter <- mat_cor[rowSums(mat_cor) > 0, colSums(mat_cor) > 0]
+  
+  
+  
+  ra_corr <- rcorr(t(ra_mat_filter), type = "spearman")
+  
+  ## correlation matrix
+  mat_cor <- ra_corr$r
+  ## significance matrix
+  sig_cor <- ra_corr$P
+  
+  ## filter out the strong (abs > 0.6) and significant (P < 0.01) correlation
+  mat_cor[abs(mat_cor) < 0.6] <- 0
+  mat_cor[sig_cor > 0.01] <- 0
+  diag(mat_cor) <- 0 
+  
+  mat_cor_filter <- mat_cor[rowSums(mat_cor) > 0, colSums(mat_cor) > 0]
+  
+  this_taxa <- taxa[rownames(taxa) %in% rownames(mat_cor_filter), ]
+  this_taxa_color <- this_taxa[, 2]
+  
+  taxa_map <- data.frame(Full_name = rownames(this_taxa),
+                         Phylum = this_taxa[, 2],
+                         Species = this_taxa[, 7])
+  taxa_map <- taxa_map[match(taxa_map$Full_name, rownames(mat_cor_filter)), ]
+  rownames(mat_cor_filter) <- colnames(mat_cor_filter) <- taxa_map$Species
+  
+  taxa_map2 <- data.frame(Phylum = factor(x = taxa_map$Phylum,
+                                            levels = unique(taxa_map$Phylum)))
+  rownames(taxa_map2) <- taxa_map$Species
+  
+  ## Define colors
+  palette_OkabeIto <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442",
+                      "#0072B2", "#D55E00", "#CC79A7", "#999999")
+  mat_colors <- list(Phylum = palette_OkabeIto[1:length(unique(taxa_map$Phylum))])
+  names(mat_colors$Phylum) <- unique(taxa_map2$Phylum)
+  
+  
+  #heatmap(mat_cor_filter, symm = TRUE, margins = c(6,6), sideColors = taxa_map$Phylum)
+  
+  pheatmap(mat_cor_filter, annotation_col = taxa_map2, annotation_row = taxa_map2,
+           annotation_colors = mat_colors, na_col="white",
+          border_color ="NA",  treeheight_row = 0, treeheight_col = 0)
+  
+  
+```
+
+```
+What do we observe here? 
+```
+
+#### Assignment 5
+
+```
+Update the functional correlation heatmap.  
+```
+
+### Clustering of micro-microbe interaction network
+
+Network clustering using Markov Clustering.
+
+```{r net_cls, echo=FALSE, warning=FALSE, message=FALSE}
+  mat_cor_filter_pos <- mat_cor_filter[mat_cor_filter>0]
+  cls <- mcl(mat_cor_filter, addLoops = T)
+  print(cls)
+  
+  cls_df <- data.frame(Species = rownames(mat_cor_filter), 
+                       Cluster = cls$Cluster)
+  cls_df <- merge(cls_df, taxa_map)
+  knitr::kable(cls_df[, colnames(cls_df) %in% c("Phylum", "Species", "Cluster")])
+```
