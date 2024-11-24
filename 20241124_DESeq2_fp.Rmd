@@ -1,0 +1,329 @@
+---
+title: "20241020_DESeq2_volcano"
+output: html_document
+date: "2024-10-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library( "DESeq2" )
+library(ggplot2)
+library(pheatmap)
+library(dplyr)
+library(curatedMetagenomicData)
+library(stringr)
+theme_set(theme_bw())
+```
+
+## DESeq2 identify differential abundance species
+
+Here we use DESeq2 to detect differential abundance species between __healthy__ and __non-healthy__ samples.
+
+The examples in this RMD use the following data set: `20241006_diarrhea_v5_counts.rds`
+
+Here we set `sfType = "poscounts"` for the function `estimateSizeFactors()`. For this function, available method for estimation: either "ratio", "poscounts", or "iterate". "ratio" uses the standard median ratio method introduced in DESeq. The size factor is the median ratio of the sample over a "pseudosample": for each gene, the geometric mean of all samples. "poscounts" and "iterate" offer alternative estimators, which can be used even when all genes contain a sample with a zero (a problem for the default method, as the geometric mean becomes zero, and the ratio undefined). The "poscounts" estimator deals with a gene with some zeros, by calculating a modified geometric mean by taking the n-th root of the product of the non-zero counts. This evolved out of use cases with Paul McMurdie's phyloseq package for __metagenomic samples__. More details can be found [here](https://support.bioconductor.org/p/9160016/#9160017).
+
+```{r deseq2_func, echo=FALSE, message=FALSE, warning=FALSE, eval=FALSE}
+  dia_f <- readRDS("20241006_diarrhea_v5_func.rds")
+
+ ################ remove unmapped and ungrouped reads
+  pathway_mat <- assay(dia_f)
+  pathway_mat <- pathway_mat[!stringr::str_detect(rownames(pathway_mat), "UNMAPPED|UNINTEGRATED"), ] 
+  #  40165  2118
+  
+  # remove the pathways assigned to taxa and unclassified
+  pathway_mat <- pathway_mat[!stringr::str_detect(rownames(pathway_mat), '__|unclassified'), ]   
+  pathway_mat <- pathway_mat * 100000
+  pathway_mat <- apply(pathway_mat, c(1, 2), function(x) as.integer(x))
+  # 551 2118
+ ################ 
+
+  colData(dia_f)$Disease <- ifelse(colData(dia_f)$disease == "healthy", 
+                                     "Healthy", "Non-healthy")
+  meta <- colData(dia_f)
+  
+  ## Remove samples with column sum == 0, i.e. no gene pathway is found except for unmapped, unclassfied or all assigned to specific taxa
+  pathway_mat <- pathway_mat[, colSums(pathway_mat) > 0]
+  ## 551 2106
+  meta <- meta[rownames(meta) %in% colnames(pathway_mat), ]
+  
+  dds_f <- DESeqDataSetFromMatrix(countData=pathway_mat, 
+                              colData=meta, 
+                              design=~Disease)
+  
+## construct DESeq DataSet Object
+#dds_f <- DESeqDataSet(se = dia_f, design=~disease)
+ds_f = DESeq(dds_f, test = "Wald", fitType="local", sfType = "poscounts")
+
+res_ds_f <- results(ds_f)
+
+res_ds_f[is.na(res_ds_f$padj),] <- 1
+res_ds_sig_f <- res_ds_f[res_ds_f$padj < 0.01,]
+dim(res_ds_sig_f)
+# 177 6
+saveRDS(res_ds_f, "20241124_DESeq_disease_func.rds")
+
+``` 
+
+We then examine the counts of species across the groups.
+
+
+#### Assignment 1 Compare the aggregated/accumulated relative abundance (aRA) of differentially abundant species between groups.
+
+```{r Prep_data, warning=FALSE, echo=FALSE, message=FALSE}
+  ra <- assay(dia_f)
+  ra <- as.matrix(apply(ra, 2, function(x) x/sum(x)))
+  metadata <- colData(dia_f)
+  metadata$Sample_ID <- rownames(metadata)
+  taxa <- str_split_fixed(rownames(ra), "\\|", 7)
+  colnames(taxa) <- c("Kingdom", "Phylum", "Class", "Order", "Family",
+                            "Genus", "Species")
+  rownames(taxa) <- rownames(ra)
+```
+
+```{r vol1, echo=FALSE, warning=FALSE, message=FALSE, fig.width=5, fig.height=4}
+  ds <- readRDS("20241124_DESeq_disease_func.rds")
+  #res_ds_f <- results(ds, alpha = 0.05)
+  res_ds_f[is.na(res_ds_f$padj),] <- 1
+
+  ggplot(res_ds_f, aes(x = log2FoldChange, y = -log10(padj))) +
+     geom_point(aes(colour = padj < 0.01), size=1) +
+     labs(x = "log2(fold change)", y = "-log10(p-value)", colour = "FDR < 1%",
+                   title = "Non-healthy vs healthy") +
+     theme_bw() +
+     scale_color_manual(values = c("gray", "skyblue2"))
+  
+  # library (EnhancedVolcano)
+  # EnhancedVolcano(res_ds,
+  #   lab = rownames(res_ds),
+  #   x = 'log2FoldChange',
+  #   y = "padj",
+  #   #y = 'pvalue',
+  #   pCutoff = 0.01, #p-value cutoff <0.01
+  #   pointSize = 3.0,
+  #   labSize = 6.0)
+```
+
+#### Assignment 1 Compare the aggregated/accumulated relative abundance (aRA) of differentially abundant species between groups.
+
+```{r healthy_aRA, warning=FALSE, message=FALSE, echo=FALSE}
+healthy_sig <- res_ds_f[res_ds_f$log2FoldChange < 1 & res_ds_f$padj < 0.01, ] 
+healthy_list <- healthy_sig@rownames
+healthy_ra <- ra[rownames(ra) %in% healthy_list, ]
+dim(healthy_ra)
+# 173 3112
+healthy_aRA_df <- data.frame(Sample_ID = colnames(healthy_ra),
+                                 aRA = colSums(healthy_ra))
+metadata$Disease <- ifelse(metadata$disease == "healthy", "Healthy", "Non-healthy")
+healthy_aRA_df <- merge(metadata, healthy_aRA_df)
+  
+ggplot(healthy_aRA_df, aes(Disease, aRA)) +
+    geom_boxplot() 
+  ## Non-healthy vs healthy --> when log2FoldChange > 1, means higher RA in Non-healthy
+```
+
+>What is the aRA distribution of species that are more abundant in healthy samples?
+Bacteroides vulgatus has aRA of 354.094, followed by Bacteroides fragilis with 58.819 aRA, and Escherichia coli with aRA of 56.474 aRA. 
+
+```{r unhealthy_aRA, warning=FALSE, message=FALSE, echo=FALSE}
+unhealthy_sig <- res_ds_f[res_ds_f$log2FoldChange > 1 & res_ds_f$padj < 0.01, ]
+unhealthy_list <- unhealthy_sig@rownames
+unhealthy_ra <- ra[rownames(ra) %in% unhealthy_list, ]
+dim(unhealthy_ra)
+# 4 3112
+unhealthy_aRA_df <- data.frame(Sample_ID = colnames(unhealthy_ra),
+                                 aRA = colSums(unhealthy_ra))
+unhealthy_aRA_df <- merge(metadata, unhealthy_aRA_df)
+  
+ggplot(unhealthy_aRA_df, aes(Disease, aRA)) +
+    geom_boxplot() 
+## Non-healthy vs healthy --> when log2FoldChange < 1, means lower RA in Non-healthy
+
+```
+
+
+>What is the aRA distribution of species that are more abundant in non-healthy samples? 
+In non-healthy samples, Ruminococcus bromii has the highest aRA of 40.079, followed by Akkermansia muciniphia with aRA of 31.78, and Eubacterium siraeum with 21.665 aRA. 
+
+>What is the main phyla in those differentially abundant species?
+For the healthy samples, the top differentially abundant phyla are Bacteroidetes, Proteobacteria, and actinobacteria. For unhealthy samples, the top differentially abundant phyla are Firmicutes, Verrucomicrobia, and Bacteroidetes.  
+
+## DESeq2 identify differential abundance species with more than two levels 
+
+```{r disease_tidy, echo=TRUE, warning=FALSE, message=FALSE, eval = TRUE}
+  dia_f <- readRDS("20241006_diarrhea_v5_func.rds")
+
+ ################ remove unmapped and ungrouped reads
+  pathway_mat <- assay(dia_f)
+  pathway_mat <- pathway_mat[!stringr::str_detect(rownames(pathway_mat), "UNMAPPED|UNINTEGRATED"), ] 
+  #  40165  2118
+  
+  # remove the pathways assigned to taxa and unclassified
+  pathway_mat <- pathway_mat[!stringr::str_detect(rownames(pathway_mat), '__|unclassified'), ]   
+  pathway_mat <- pathway_mat * 100000
+  pathway_mat <- apply(pathway_mat, c(1, 2), function(x) as.integer(x))
+  # 551 2118
+ ################ 
+
+  meta <- as.data.frame(colData(dia_f))
+  
+  ## Remove samples with column sum == 0, i.e. no gene pathway is found except for unmapped, unclassfied or all assigned to specific taxa
+  pathway_mat <- pathway_mat[, colSums(pathway_mat) > 0]
+  ## 551 2106
+  meta <- meta[rownames(meta) %in% colnames(pathway_mat), ]
+  cdi_list <- c("CDI;pneumonia", "CDI;cellulitis", "CDI;osteoarthritis", "CDI;ureteralstone")
+  
+  meta <- mutate(meta, disease_tidy = case_when(disease == "IBD;perianal_fistula" ~ "IBD",
+                                                disease %in% cdi_list ~ "CDI",
+                                               TRUE ~ disease))
+  filter_lst <- c("healthy", "IBD", "acute_diarrhoea", "CDI")
+  
+  meta <- meta[meta$disease_tidy %in% filter_lst, ]
+   meta$disease_tidy <- factor(meta$disease_tidy, levels = c("healthy", "IBD", "CDI", "acute_diarrhoea")) 
+   ##no healthy samples
+  dds_multi <- DESeqDataSetFromMatrix(countData=pathway_mat, 
+                              colData=meta, 
+                              design=~disease_tidy)
+   ds_multi = DESeq(dds_multi, fitType="local", sfType = "poscounts", parallel = T)
+
+  saveRDS(ds_multi, "20241124_DESeq_disease_multi_levels_fp.rds")
+```
+
+
+After getting differentially abundant species between two levels: __healthy__ and __non-healthy__, we extend our model to multiple levels. Since we have too many disease conditions (including `r unique(colData(dia_v5_ra)$disease)`), we will clean the data by tidying up the disease names and limit the samples to the following conditions: `filter_lst <- c("acute_diarrhoea", "CDI", "healthy", "IBD")`. 
+
+We then check the results of this new model with multiple levels. Different comparisons were calculated in one command and we can check all comparison using `resultsNames(ds_multi)`. Below we plot the volcano of IBD healthy control samples.
+
+```{r deseq_multi_res, echo=FALSE, warning=FALSE, message=FALSE, eval = FALSE}
+  ds_multi <- readRDS("20241124_DESeq_disease_multi_levels_fp.rds")
+  resultsNames(ds_multi)
+  res_ds_multi <- results(ds_multi, alpha = 0.05)
+```
+
+#### Assignment 2 Plot other comparisons of the DESeq.
+
+```{r vol_ad_h, echo=FALSE, warning=FALSE, message=FALSE, fig.width=5, fig.height=4}
+  res1_ah <- results(ds_multi, name=("disease_tidy_acute_diarrhoea_vs_healthy"), alpha = 0.05)
+  res1_ah[is.na(res1_ah$padj),] <- 1
+
+  ggplot(res1_ah, aes(x = log2FoldChange, y = -log10(padj))) +
+     geom_point(aes(colour = padj < 0.01), size=1) +
+     labs(x = "log2(fold change)", y = "-log10(p-value)", colour = "FDR < 1%",
+                   title = "Acute Diarrhea vs Healthy") +
+     theme_bw() +
+     scale_color_manual(values = c("gray", "skyblue2"))
+  
+  diff_abun_ah <- sum(res1_ah$log2FoldChange > 1 & res1_ah$padj < 0.01) #+ sum(res1_ah$log2FoldChange < 1 & res1_ah$padj < 0.01) 
+  #259 (97+162)
+```
+
+```{r vol_cdi_h, echo=FALSE, warning=FALSE, message=FALSE, fig.width=5, fig.height=4}
+  res1_ch <- results(ds_multi, name=("disease_tidy_CDI_vs_healthy"), alpha = 0.05)
+  res1_ch[is.na(res1_ch$padj),] <- 1
+
+  ggplot(res1_ch, aes(x = log2FoldChange, y = -log10(padj))) +
+     geom_point(aes(colour = padj < 0.01), size=1) +
+     labs(x = "log2(fold change)", y = "-log10(p-value)", colour = "FDR < 1%",
+                   title = "CDI vs Healthy") +
+     theme_bw() +
+     scale_color_manual(values = c("gray", "skyblue2"))
+  
+  diff_abun_ch <- sum(res1_ch$log2FoldChange > 1 & res1_ch$padj < 0.01) + sum(res1_ch$log2FoldChange < 1 & res1_ch$padj < 0.01)
+  #0
+```
+
+
+```{r vol_ibd_h, echo=FALSE, warning=FALSE, message=FALSE, fig.width=5, fig.height=4}
+  res1_ih <- results(ds_multi, name=("disease_tidy_IBD_vs_healthy"), alpha = 0.05)
+  res1_ih[is.na(res1_ih$padj),] <- 1
+
+  ggplot(res1_ih, aes(x = log2FoldChange, y = -log10(padj))) +
+     geom_point(aes(colour = padj < 0.01), size=1) +
+     labs(x = "log2(fold change)", y = "-log10(p-value)", colour = "FDR < 1%",
+                   title = "IBD vs Healthy") +
+     theme_bw() +
+     scale_color_manual(values = c("gray", "skyblue2"))
+  diff_abun_ih <- sum(res1_ih$log2FoldChange > 1 & res1_ih$padj < 0.01) #+ sum(res1_ih$log2FoldChange < 1 & res1_ih$padj < 0.01)
+  #165 (5+160)
+```
+#### Assignment 2 Plot other comparisons of the DESeq.
+
+`Which comparison has the highest number of differentially abundant species?`
+
+IBD and Acute Diarrhea has the highest number of differentially abundant species with 357 species in total. 
+
+## DESeq2 identify differential abundance species with two factors model
+
+Here we further tested the differently abundant species between __healthy__ and __non-healthy__ patients in each __country__. Our model will be `~ age_category + disease_tidy`.
+
+
+```{r deseq_two_factors_multi, echo=TRUE, warning=FALSE, message=FALSE, eval = FALSE}
+  filter_lst <- c("acute_diarrhoea", "CDI", "healthy", "IBD")
+  meta <- meta[meta$disease_tidy %in% filter_lst, ]
+  meta$disease_tidy <- factor(meta$disease_tidy, levels = c("healthy", "acute_diarrhoea", "CDI", "IBD"))
+  meta$age_category <- factor(meta$age_category, levels = c("adult", "child", "schoolage", "senior"))
+  meta$country <- factor(meta$country, levels = c("BGD", "USA", "DNK", "ESP","NLD", "CAN", "Unknown"))
+  meta$country[is.na(meta$country)] <- "Unknown" #Replacing "NA" 
+  pathway_mat <- pathway_mat[, colnames(pathway_mat) %in% rownames(meta)]
+  pathway_mat <- pathway_mat[rowSums(pathway_mat) > 5, ]
+  # 1015 3168
+  
+  ## construct DESeq DataSet from matrix
+  
+  dds_two_multi <- DESeqDataSetFromMatrix(countData=pathway_mat, 
+                              colData=meta, 
+                              design=~ age_category + disease_tidy + country )
+
+
+  ds_two_multi = DESeq(dds_two_multi, fitType="local", sfType = "poscounts", parallel = T)
+
+
+  saveRDS(ds_two_multi, "20241124_DESeq_disease_two_factors_multi_levels_fp.rds")
+```
+
+```{r vol_tm, echo=FALSE, warning=FALSE, message=FALSE, fig.width=5, fig.height=4}
+  ds_two_multi <- readRDS("20241124_DESeq_disease_two_factors_multi_levels_fp.rds")
+  resultsNames(ds_two_multi)
+```
+```{r vol_ac_h, echo=FALSE, warning=FALSE, message=FALSE, fig.width=5, fig.height=4}
+  res1_ac <- results(ds_two_multi, name=("age_category_child_vs_adult"), alpha = 0.05)
+  res1_ac[is.na(res1_ac$padj),] <- 1
+
+  ggplot(res1_ac, aes(x = log2FoldChange, y = -log10(padj))) +
+     geom_point(aes(colour = padj < 0.01), size=1) +
+     labs(x = "log2(fold change)", y = "-log10(p-value)", colour = "FDR < 1%",
+                   title = "Child vs Adult") +
+     theme_bw() +
+     scale_color_manual(values = c("gray", "skyblue2"))
+  diff_abun_ac <- sum(res1_ac$log2FoldChange > 0 & res1_ac$padj < 0.01) #+ sum(res1_ac$log2FoldChange < 0 & res1_ac$padj < 0.01)
+  #52 (15+37)
+```
+```{r vol_sa_h, echo=FALSE, warning=FALSE, message=FALSE, fig.width=5, fig.height=4}
+  res1_sa <- results(ds_two_multi, name=("age_category_senior_vs_adult"), alpha = 0.05)
+  res1_sa[is.na(res1_sa$padj),] <- 1
+
+  ggplot(res1_sa, aes(x = log2FoldChange, y = -log10(padj))) +
+     geom_point(aes(colour = padj < 0.01), size=1) +
+     labs(x = "log2(fold change)", y = "-log10(p-value)", colour = "FDR < 1%",
+                   title = "Senior vs Adult") +
+     theme_bw() +
+     scale_color_manual(values = c("gray", "skyblue2"))
+  diff_abun_sa <- sum(res1_sa$log2FoldChange > 0 & res1_sa$padj < 0.01) #+ sum(res1_sa$log2FoldChange < 0 & res1_sa$padj < 0.01)
+  #100 (38+62)
+```
+```{r vol_ub_h, echo=FALSE, warning=FALSE, message=FALSE, fig.width=5, fig.height=4}
+  res1_ub <- results(ds_two_multi, name=("country_USA_vs_BGD"), alpha = 0.05)
+  res1_ub[is.na(res1_ub$padj),] <- 1
+
+  ggplot(res1_ub, aes(x = log2FoldChange, y = -log10(padj))) +
+     geom_point(aes(colour = padj < 0.01), size=1) +
+     labs(x = "log2(fold change)", y = "-log10(p-value)", colour = "FDR < 1%",
+                   title = "USA vs BGD") +
+     theme_bw() +
+     scale_color_manual(values = c("gray", "skyblue2"))
+  diff_abun_ub <- sum(res1_ub$log2FoldChange > 0 & res1_ub$padj < 0.01) + sum(res1_ub$log2FoldChange < 0 & res1_ub$padj < 0.01)
+  #141 (62+79)
+```
+#### Assignment 3 Run DESeq2 with two factors model (including interaction) and plot the results. 
+
+I have a question here regarding the volcano plots: there are so many factors related to each other, how do we choose which one to highlight? Is my current DESeq2 model showing interactions between factors, or is it not?
