@@ -1,0 +1,350 @@
+---
+title: "20240922_Statistical_tests"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+  knitr::opts_chunk$set(echo = TRUE)
+  library(dplyr)
+  library(curatedMetagenomicData)
+  library(ggplot2)
+  library(phyloseq)
+  library(vegan)
+  
+  theme_set(theme_bw())
+```
+
+### Data import and pre-processing
+
+Firstly, we load the example data of diarrhea related samples. 
+
+```{r data_import_from_rds, echo=FALSE, warning=FALSE, message=FALSE}
+  diarrheaStudy <- readRDS("20240922_diarrhea_comp_profile.rds")
+```
+
+In total, `r nrow(colData(diarrheaStudy))` samples were extracted with their relative abundance data. 
+
+### Alpha diversity comparison and statistical test of composition profile
+
+We compare the alpha diversity of different age categories and test if they are significant different _via_ __Pairwise Wilcox test__.
+
+```{r alpha_plot, warning=FALSE, message=FALSE, echo = FALSE, fig.width=4, fig.height=3}
+  ra_mat <- assay(diarrheaStudy)
+  metadata <- as.data.frame(colData(diarrheaStudy))
+
+  alpha <- diversity(t(ra_mat), "shannon")
+  
+  if (identical(names(alpha), rownames(metadata))){
+    metadata$Shannon <- alpha 
+  }
+  metadata$Healthy <- ifelse(metadata$study_condition == "control", "Yes", "No")
+  
+  pdat <- metadata[, colnames(metadata) %in% c("Shannon", "age_category", 
+                                                   "Healthy", "study_condition")]
+  
+ 
+  
+  ggplot(pdat, aes(age_category, Shannon, fill = Healthy)) + 
+    geom_violin() +
+    scale_x_discrete(limits = c("child", "schoolage", "adult", "senior")) +
+    theme_minimal() +
+    scale_fill_manual(values = c("salmon", "darkolivegreen3"))
+```
+
+```{r alpha_pairwise_wilcox_t_test, warning=FALSE, message=FALSE, echo = FALSE}
+  alpha_child <- metadata[metadata$age_category == "child", ]$Shannon
+  alpha_school <- metadata[metadata$age_category == "schoolage", ]$Shannon
+  
+  t.test(alpha_child, alpha_school)
+  
+  pairwise.t.test(alpha, metadata$age_category)
+  
+  pairwise.wilcox.test(alpha, metadata$age_category)
+  pairwise.wilcox.test(alpha, metadata$Healthy)
+  pairwise.wilcox.test(alpha, metadata$disease)
+  
+  pairwise.t.test(alpha, metadata$disease, p.adjust.method = "bonf")
+  pairwise.t.test(alpha, metadata$Healthy, p.adjust.method = "bonf")
+
+  ## Try and compare different grouping with diverse metadata : )
+```
+
+ANOVA test comparing alpha diversities between different groups.
+
+```{r anova, warning=FALSE, message=FALSE, echo = FALSE}
+
+  summary(aov(Shannon ~ disease * country * age_category, metadata))
+  
+```
+
+In the output:
+
+The rownames tell what the response variables are.  
+The columns are an ANOVA table which contain some useful values:  
+The __Df__ column contains the degrees of freedom values on each row.  
+The __F value__ column contains the F statistic.
+The __Pr (> F)__ column contains P-value, anything smaller than 2.2e-16 gets reported as < 2.2e-16).  
+The other values in the table (in the __Sum Sq__ and __Mean Sq__) columns are used to calculate the F statistic itself.
+
+#### Assignment 1 
+
+Compare the aggregated relative abundance (RA) of the core microbiota between different groups and test whether the differences are significant. 
+```{r Phyloseq, echo=FALSE, warning=FALSE, message=FALSE}
+  ra_mat <- assay(diarrheaStudy)
+  metadata <- colData(diarrheaStudy)
+  metadata$Sample_ID <- rownames(metadata)
+  ra_mat <- as.matrix(apply(ra_mat, 2, function(x) x/sum(x)))
+
+  library(stringr)
+  taxa <- str_split_fixed(rownames(ra_mat), "\\|", 7)
+  colnames(taxa) <- c("Kingdom", "Phylum", "Class", "Order", "Family",
+                            "Genus", "Species")
+  rownames(taxa) <- rownames(ra_mat)
+  
+  ps <- phyloseq(otu_table(as.matrix(ra_mat), taxa_are_rows=TRUE), 
+               sample_data(as.data.frame(metadata)), 
+               tax_table(taxa))
+  ps <- transform_sample_counts(ps, function(x) x/sum(x))
+```
+
+```{r core, echo=FALSE, warning=FALSE, message=FALSE}
+#ref website: https://microbiome.github.io/tutorials/Core.html
+#library(devtools)
+#install_github("microbiome/microbiome")
+#https://david-barnett.github.io/microViz/
+#install.packages(
+ # "microViz",
+#  repos = c(davidbarnett = "https://david-barnett.r-universe.dev", getOption("repos"))
+#)
+library(microViz)
+library(microbiome)
+pseq.rel <- microbiome::transform(ps, "compositional")
+ps_core<- aggregate_rare(pseq.rel,level="Genus",detection=0, prevalence = .8)
+
+#core_genra_list <-(rownames(ps_core@otu_table))
+```
+
+```{r core_pairwise_wilcox_t_test, warning=FALSE, message=FALSE, echo = FALSE}
+  #ps_core <-  makeTreeSummarizedExperimentFromPhyloseq(ps_core)
+  #DA??
+  #a <- ancom(data = NULL, assay_name = "counts", tax_level= "Genus", phyloseq = ps_core, p_adj_method = "bonf", prv_cut = 0, lib_cut = 0, main_var = "disease", adj_formula = "age_category", rand_formula = NULL, lme_control = NULL, struc_zero = TRUE, neg_lb = TRUE, alpha = 0.01, n_cl = 2)
+  
+  ### Changes
+  ps_healthy <- ps_filter(ps_core,disease=="healthy")
+  ps_healthy_mat <- as.data.frame(ps_healthy@otu_table)
+  Healthy_data <- data.frame(aggregated_RA = rowSums(ps_healthy_mat))
+  
+  ps_IBD <- ps_filter(ps_core,disease=="IBD")
+  ps_IBD_mat <- as.data.frame(ps_IBD@otu_table)
+  IBD_data <- data.frame(aggregated_RA = rowSums(ps_IBD_mat))
+  
+  ps_CDI <- ps_filter(ps_core,disease=="CDI")
+  ps_CDI_mat <- as.data.frame(ps_CDI@otu_table)
+  CDI_data <- data.frame(aggregated_RA = rowSums(ps_CDI_mat))
+  
+  ps_STEC <- ps_filter(ps_core,disease=="STEC")
+  ps_STEC_mat <- as.data.frame(ps_STEC@otu_table)
+  STEC_data <- data.frame(aggregated_RA = rowSums(ps_STEC_mat))
+  
+  ps_ad <- ps_filter(ps_core,disease=="acute_diarrhoea")
+  ps_ad_mat <- as.data.frame(ps_ad@otu_table)
+  ad_data <- data.frame(aggregated_RA = rowSums(ps_ad_mat))
+  
+  ps_TKI <- ps_filter(ps_core,disease=="TKI_dependent_diarrhoea")
+  ps_TKI_mat <- as.data.frame(ps_TKI@otu_table)
+  TKI_data <- data.frame(aggregated_RA = rowSums(ps_TKI_mat))
+
+  core_sum <- c(Healthy_data$aggregated_RA, IBD_data$aggregated_RA, CDI_data$aggregated_RA, STEC_data$aggregated_RA, ad_data$aggregated_RA, TKI_data$aggregated_RA)
+
+# Create the corresponding group labels
+  group_labels <- c(rep("Healthy", length(Healthy_data$aggregated_RA)), 
+                  rep("IBD", length(IBD_data$aggregated_RA)), 
+                  rep("CDI", length(CDI_data$aggregated_RA)),rep("STEC", length(STEC_data$aggregated_RA)),rep("ad", length(ad_data$aggregated_RA)), rep("TKI", length(TKI_data$aggregated_RA)))
+  
+  pairwise.t.test(core_sum, group_labels, p.adjust.method="bonf")
+  summary(aov(core_sum ~ group_labels))
+
+  #QUESTION: HOW DO WE DO THE NORMALIZATION ON AGGREGATED RA WITH DIFFERENT SAMPLE SIZES? 
+```
+What species/genera are included in the core microbiota of all samples? What are the aggregated RA of those species/genera under different conditions? Are they significantly different?
+
+The genra Bacteroides, Blautia, Dorea, Eubacterium, Faecalibacterium, Roseburia are in the core Microbiota of all samples. The aggregated RA of those species under is recorded in the mean column in the "core_data" table. 
+
+Try to use both pairwise t-test/wilcox-test and ANOVA.
+What are the differences between different tests?
+
+T-test and Wilcox-test are both used to compare two independent samples. While T-test calculates the actual mean differences between samples, Wilcox-test tests such difference using ranks of samples. On the other hand, ANOVA is used for comparing differences in multiple samples. 
+
+What does the (significant / non-significant) different accumulated RA of core microbiota mean?
+
+I have problems with the retrieval of counts data so the statistical analysis here looks quite suspicious. I was thinking that it would be more accurate to report the data if I can get the counts data and rarefy it accordingly. As a result, I didn't have a core microbiota analysis result reported at the moment. 
+
+###Clinically Relevant Species IFltering and Comparison
+
+```{r crs, warning=FALSE, message=FALSE, echo=FALSE}
+
+  crs.healthy <- ps_filter(ps,disease=="healthy")
+  crs.hcd <- subset_taxa(crs.healthy, Species=="s__Clostridioides_difficile")
+  crs.hfn <- subset_taxa(crs.healthy, Species=="s__Fusobacterium_nucleatum")
+  ps_healthy_mat <- as.data.frame(crs.hcd@otu_table)
+  healthy_data <- data.frame(aggregated_RA = rowSums(ps_healthy_mat))
+  
+  crs.IBD <- ps_filter(ps,disease=="IBD")
+  crs.icd <- subset_taxa(crs.IBD, Species=="s__Clostridioides_difficile")
+  crs.ifn <- subset_taxa(crs.IBD, Species=="s__Fusobacterium_nucleatum")
+  ps_ibd_mat <- as.data.frame(crs.icd@otu_table)
+  ibd_data <- data.frame(aggregated_RA = rowSums(ps_ibd_mat))
+
+  
+  crs.CDI <- ps_filter(ps,disease=="CDI")
+  crs.ccd <- subset_taxa(crs.CDI, Species=="s__Clostridioides_difficile")
+  crs.cfn <- subset_taxa(crs.CDI, Species=="s__Fusobacterium_nucleatum")
+  ps_cdi_mat <- as.data.frame(crs.ccd@otu_table)
+  cdi_data <- data.frame(aggregated_RA = rowSums(ps_cdi_mat))
+
+  crs.ad <- ps_filter(ps,disease=="acute_diarrhoea")
+  crs.ahp <- subset_taxa(crs.ad, Species=="s__Helicobacter_pylori") #Only condition that shows H.pylori. 
+  crs.acd <- subset_taxa(crs.ad, Species=="s__Clostridioides_difficile")
+  crs.afn <- subset_taxa(crs.ad, Species=="s__Fusobacterium_nucleatum")
+  ps_ad_mat <- as.data.frame(crs.acd@otu_table)
+  ad_data <- data.frame(aggregated_RA = rowSums(ps_ad_mat))
+  
+  crs.STEC <- ps_filter(ps, disease=="STEC")
+  #no c.diff, no F.nucleatum
+
+  crs.TKI <- ps_filter(ps,disease=="TKI_dependent_diarrhoea")
+  crs.tfn <- subset_taxa(crs.TKI, Species=="s__Fusobacterium_nucleatum")
+  #no c.diff
+  #ps_TKI_mat <- as.data.frame(crs.tfn@otu_table)
+  #TKI_data <- data.frame(aggregated_RA = rowSums(ps_TKI_mat))
+
+  core_sum <- c(healthy_data$aggregated_RA, ibd_data$aggregated_RA, cdi_data$aggregated_RA, ad_data$aggregated_RA)
+  group_labels <- c(rep("Healthy", length(healthy_data$aggregated_RA)), 
+                  rep("IBD", length(ibd_data$aggregated_RA)), 
+                  rep("CDI", length(cdi_data$aggregated_RA)), rep("ad", length(ad_data$aggregated_RA)))
+
+  pairwise.t.test(core_sum, group_labels, p.adjust.method="bonf")
+  summary(aov(core_sum ~ group_labels))
+```
+	Pairwise comparisons using t tests with pooled SD 
+
+data:  core_sum and group_labels 
+
+        ad CDI Healthy
+CDI     -  -   -      
+Healthy -  -   -      
+IBD     -  -   -      
+
+P value adjustment method: bonferroni 
+
+Most of the sampels did not show any presence of H. pylori except for acute diarrhea group. STEC did not report presence of any clinically relevant species while the other groups all showed both F. nucleatum and C. difficile, except for TKI which only shows C. difficile. Again, I failed to retrieve the counts data so the statistics analysis didn't report any significant result. 
+### Beta diversity and statistical test
+
+To investigate the beta-diversity of this big dataset, firstly, we will filter out the rare taxa (i.e. taxa appeared in less than 0.5% of samples).
+
+```{r beta_pre, warning=FALSE, message=FALSE, echo = FALSE}
+  ## filter out rare species before plotting beta-diversity, 
+  ## taxa appeared in less than 0.5% of samples are removed
+  n_sample <- ncol(ra_mat)
+  n_sample_filter <- round(n_sample/200)
+  
+  ra_mat_filter <- ra_mat[rowSums(ra_mat > 0) > n_sample_filter, ]
+  
+  histogram(colSums(ra_mat_filter>0), xlab = "Number of detected species",
+            breaks = 40)
+
+  ## We noticed here that 2 samples (namely "LD-Run2-03" and "PSM7J177") have non
+  ## species left after filtering out rare taxa, turns out those samples contains 
+  ## only 2 and 1 species respectively before filtering rare --> very suspicious
+  ra_mat_filter <- ra_mat_filter[, colSums(ra_mat_filter>0) > 0]
+```
+
+After the filtering, we observed some samples have very low leftover accumulated relative abundance, we plotted the distribution of number of left taxa in each sample and the histogram shows that most of the samples have around 50 species. Therefore, we shall move those samples with 0 species detected. 
+
+
+```{r beta_PCoA_age, warning=FALSE, message=FALSE, echo = FALSE, fig.width=8, fig.height=8}
+  ra_mat_filter <- apply(ra_mat_filter, 2, function(x) x/sum(x))
+  metadata$disease <- ifelse(metadata$disease == "healthy", "Healthy",
+                                     ifelse(metadata$disease == "IBD", "IBD",
+                                            "Others (CDI, STEC, TKI dependent diarrhea, and acute diarrhea)"))
+
+  ps.prop <- phyloseq(otu_table(as.matrix(ra_mat_filter), taxa_are_rows=TRUE), 
+               sample_data(as.data.frame(metadata)))
+
+  ord.nmds.bray <- ordinate(ps.prop, method="PCoA", distance="bray")
+  plot_ordination(ps.prop, ord.nmds.bray, color="Healthy", shape="disease",
+                title="Bray-Curtis PCoA") + 
+    facet_wrap(~ age_category, scales = "free") +
+    scale_color_manual(values = c("salmon", "darkolivegreen3")) +
+    scale_shape_manual(values = c(16, 1, 2)) +
+    theme(legend.position = "top")
+    
+```
+
+We do not observe any separation between different groups, therefore, we need to statistically test if those factors (metadata, e.g. study condition) significantly affect the beta-diversity of gut microbiome. Due to the sample size, this step needs more memory than a normal laptop, therefore we set the permutation times here as 19 to get P value that is no more than 0.05 (usually 999).
+
+```{r beta_permanova, warning=FALSE, message=FALSE, echo = FALSE}
+  dis_mat <- as.matrix(vegdist(as.matrix(t(ra_mat_filter)), method = "bray"))
+  metadata <- as.data.frame(metadata[rownames(metadata) %in% colnames(ra_mat_filter), ])
+  adonis2(dis_mat ~ disease * country * age_category, 
+          data = as.data.frame(metadata), permutations = 199)
+  ## this step takes about 2 min to run on a laptop with 16Gb RAM with Apple M1 Pro chip.
+```
+
+In this output, column __R^2^__ indicate the proportion of variance can be explained by the corresponding factor.
+
+As we can tell, 83.64% of the variance cannot be explained by study condition (healthy or not), country, and age category of samples, indicate the reason why we don't observe a clear clustering when we compare the samples basing on their community composition.
+
+#### Assignment 2
+
+Plot the NMDS of Bray-Curtis dissimilarity.
+Apply PERMANOVA analysis to test the factors affect the beta-diversity basing on other distance/dissimilarity indices, e.g. weighted and unweighted UniFrac.
+
+```{r beta_NMDS_age, warning=FALSE, message=FALSE, echo = FALSE, fig.width=8, fig.height=8}
+  ra_mat_filter <- apply(ra_mat_filter, 2, function(x) x/sum(x))
+  metadata$disease <- ifelse(metadata$disease == "healthy", "Healthy",
+                                     ifelse(metadata$disease == "IBD", "IBD",
+                                            "Others (CDI, STEC, TKI dependent diarrhea, and acute diarrhea)"))
+
+  ps.prop <- phyloseq(otu_table(as.matrix(ra_mat_filter), taxa_are_rows=TRUE), 
+               sample_data(as.data.frame(metadata)))
+
+  ord.nmds.bray <- ordinate(ps.prop, method="NMDS", distance="bray")
+  plot_ordination(ps.prop, ord.nmds.bray, color="Healthy", shape="disease",
+                title="Bray-Curtis PCoA") + 
+    facet_wrap(~ age_category, scales = "free") +
+    scale_color_manual(values = c("salmon", "darkolivegreen3")) +
+    scale_shape_manual(values = c(16, 1, 2)) +
+    theme(legend.position = "top")
+    
+```
+
+```{r beta_permanova2, warning=FALSE, message=FALSE, echo = FALSE}
+  library(phyloseq)
+  data(ps_core)
+  #dis_mat <- distance(ps_core, method="unifrac")
+  dis_mat <- as.matrix(vegdist(as.matrix(t(ra_mat_filter)), method = "bray"))
+  metadata <- as.data.frame(metadata[rownames(metadata) %in% colnames(ra_mat_filter), ])
+  adonis2( dis_mat ~ disease * country * age_category, 
+          data = as.data.frame(metadata), permutations = 199)
+  ## this step takes about 2 min to run on a laptop with 16Gb RAM with Apple M1 Pro chip.
+```
+Euclidean:
+
+Permutation test for adonis under reduced model
+Permutation: free
+Number of permutations: 199
+
+adonis2(formula = dis_mat ~ disease * country * age_category, data = as.data.frame(metadata), permutations = 199)
+           Df SumOfSqs      R2      F Pr(>F)   
+Model      33    58.65 0.11761 13.147  0.005 **
+Residual 3255   440.03 0.88239                 
+Total    3288   498.68 1.00000                 
+---
+Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+```
+I encountered a problem while calculating unifrac distance. Calculating unifrac required a phylogenetic tree in order to calculate the distance, yet in the phyloseq project there isn't one. I'm not sure how to find the phylogenetic tree from the original diarrheaStudy dataset and how to incorporate it into the phyloseq object. For bray-curtis, 84.196% of the data cannot be explained by the diseases, country, and age category's influences. However, for the euclidean distance, that percentage increases to 88.239%. 
+```
+
+### References
