@@ -1,0 +1,274 @@
+---
+title: "20241217_network_analysis"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+  knitr::opts_chunk$set(echo = TRUE)
+  library(curatedMetagenomicData)
+  library(pheatmap)
+  library(Hmisc)
+  library(stringr)
+  library(MCL) 
+  library(reshape2)
+```
+
+## Introduction
+
+We will assess the correlation between species across healthy control (HC) samples and non-HC from the diarrhea dataset. 
+
+```{r readin_data, echo=FALSE, warning=FALSE, message=FALSE, eval = TRUE}
+  ### load the saved 'curatedMetagenomics' data
+  dia_v5_ra <- readRDS("20240922_diarrhea_comp_profile.rds")
+  colData(dia_v5_ra)$Disease <- ifelse(colData(dia_v5_ra)$disease == "healthy", 
+                                       "Healthy", "Non-healthy")
+  
+  ### get the taxa table
+  ra_mat <- assay(dia_v5_ra)
+  taxa <- str_split_fixed(rownames(ra_mat), "\\|", 7)
+  colnames(taxa) <- c("Kingdom", "Phylum", "Class", "Order", "Family",
+                            "Genus", "Species")
+  metadata <- colData(dia_v5_ra)
+  
+  metadata$Sample_ID <- rownames(metadata)
+  rownames(taxa) <- rownames(ra_mat)
+```
+
+## Correlation between microbial species 
+
+Get the correlation coefficient adjacency matrix.
+
+```{r filter_rare, echo=FALSE, warning=FALSE, message=FALSE}
+  ra_mat <-  as.matrix(apply(ra_mat, 2, function(x) x/sum(x)))
+
+  n_sample <- ncol(ra_mat)
+  n_sample_filter <- round(n_sample*0.2) #original 0.05
+  
+  ra_mat_filter1 <- ra_mat[rowSums(ra_mat > 0) > n_sample_filter, ]
+  ra_mat_filter2 <- ra_mat[rowSums(ra_mat) / n_sample > 0.001, ] #original 0.00001
+  
+  pass_filter <- intersect(rownames(ra_mat_filter1), rownames(ra_mat_filter2))
+  rm(ra_mat_filter1, ra_mat_filter2)
+  
+  ra_mat_filter <- ra_mat[pass_filter, ]
+  
+  #dim(ra_mat_filter)
+  
+  ## re-normalize the relative abundance by column
+  ra_mat_filter <-  as.matrix(apply(ra_mat_filter, 2, function(x) x/sum(x)))
+  
+```
+
+We plot the heatmap of filtered correlation matrix (as before).
+
+```{r corr_heatmap, echo=TRUE, warning=FALSE, message=FALSE, eval=TRUE, fig.width=14, fig.height=12}
+  ra_corr <- rcorr(t(ra_mat_filter), type = "spearman")
+  
+  ## correlation matrix
+  mat_cor <- ra_corr$r
+  ## significance matrix
+  sig_cor <- ra_corr$P
+  
+  ## filter out the medium/strong (abs > 0.2) and significant (P < 0.01) correlation
+  mat_cor[abs(mat_cor) < 0.3] <- 0 #original 0.2
+  mat_cor[sig_cor > 0.01] <- 0
+  diag(mat_cor) <- 0 
+  
+  mat_cor_filter <- mat_cor[rowSums(mat_cor) > 0, colSums(mat_cor) > 0]
+  sig_cor_filter <- sig_cor[rowSums(mat_cor) > 0, colSums(mat_cor) > 0]
+  
+  mat_cor_filter[upper.tri(mat_cor_filter)] <- 0
+  
+  ######### Heatmap
+  this_taxa <- taxa[rownames(taxa) %in% rownames(mat_cor_filter), ]
+  this_taxa_color <- this_taxa[, 2]
+  
+  taxa_map <- data.frame(Full_name = rownames(this_taxa),
+                         Phylum = this_taxa[, 2],
+                         Species = this_taxa[, 7])
+  taxa_map <- taxa_map[match(taxa_map$Full_name, rownames(mat_cor_filter)), ]
+  rownames(mat_cor_filter) <- colnames(mat_cor_filter) <- taxa_map$Species
+  
+  taxa_map2 <- data.frame(Phylum = factor(x = taxa_map$Phylum,
+                                            levels = unique(taxa_map$Phylum)))
+  rownames(taxa_map2) <- taxa_map$Species
+  
+  ## Define colors
+  palette_OkabeIto <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442",
+                      "#0072B2", "#D55E00", "#CC79A7", "#999999")
+  mat_colors <- list(Phylum = palette_OkabeIto[1:length(unique(taxa_map$Phylum))])
+  names(mat_colors$Phylum) <- unique(taxa_map2$Phylum)
+  
+  
+  #heatmap(mat_cor_filter, symm = TRUE, margins = c(6,6), sideColors = taxa_map$Phylum)
+  
+  pheatmap(mat_cor_filter, annotation_col = taxa_map2, annotation_row = taxa_map2,
+           annotation_colors = mat_colors, na_col="white",
+          border_color ="NA",  treeheight_row = 0, treeheight_col = 0, fontsize = 5)
+```
+
+Alternatively, we could reformat the matrix to node and edge table and export to Cytoscape for visualization.
+
+```{r corr_cyto, echo=TRUE, warning=FALSE, message=FALSE, eval=TRUE}
+
+  ######### Reformat for Cytoscape
+  df1 <- melt(mat_cor_filter, na.rm = TRUE)
+  colnames(df1) <- c("node1", "node2", "edge")
+  
+  df2 <- melt(sig_cor_filter, na.rm = TRUE)
+  colnames(df2) <- c("node1", "node2", "sig")
+  
+  df_net <- merge(df1, df2, by = c("node1", "node2"))
+  df_net_sig <- df_net[df_net$sig < 0.01, ]
+  df_net_sig <- df_net_sig[df_net_sig$edge != 0, ]
+  
+  write.table(df_net_sig, "20250130_edge_tab.txt", quote = F, sep = "\t", row.names = F)
+  
+  this_taxa <- taxa[rownames(taxa) %in% rownames(mat_cor_filter), ]
+  this_taxa_color <- this_taxa[, 2]
+  
+  taxa_map <- data.frame(Full_name = rownames(this_taxa),
+                         Phylum = this_taxa[, 2],
+                         Species = this_taxa[, 7])
+  taxa_map <- taxa_map[match(taxa_map$Full_name, rownames(mat_cor_filter)), ]
+  write.table(taxa_map, "20250130_node_tab.txt", quote = F, sep = "\t", row.names = F)
+```
+
+
+#### Assignment
+```{r corr cmp h, echo=FALSE, warning=FALSE, message=FALSE, fig.width=26, fig.height=24}
+
+  hc <- metadata[metadata$Disease == "Healthy", ]
+  nhc <- metadata[metadata$Disease == "Non-healthy", ] 
+  ra_mat_hc <- as.data.frame(ra_mat_filter[, colnames(ra_mat_filter) %in% hc$subject_id])
+  ra_corr_hc <- rcorr(t(ra_mat_hc), type = "spearman")
+  
+  ## correlation matrix
+  mat_cor_hc <- ra_corr_hc$r
+  ## significance matrix
+  sig_cor_hc <- ra_corr_hc$P
+  
+  ## filter out the strong (abs > 0.4) and significant (P < 0.01) correlation
+  mat_cor_hc[abs(mat_cor_hc) < 0.3] <- 0
+  mat_cor_hc[sig_cor_hc > 0.01] <- 0
+  diag(mat_cor_hc) <- 0 
+  
+  mat_cor_filter_hc <- mat_cor_hc[rowSums(mat_cor_hc) > 0, colSums(mat_cor_hc) > 0]
+  sig_cor_filter_hc <- sig_cor_hc[rowSums(mat_cor_hc) > 0, colSums(mat_cor_hc) > 0]
+  
+  mat_cor_filter_hc[upper.tri(mat_cor_filter_hc)] <- 0
+  
+  p1 <- pheatmap(mat_cor_filter_hc, na_col="white",
+          border_color ="NA",  treeheight_row = 0, treeheight_col = 0, main = "Healthy Relative Abundance")
+  
+```
+```{r corr_cyto_hc, echo=TRUE, warning=FALSE, message=FALSE, eval=TRUE}
+
+  ######### Reformat for Cytoscape
+  df1 <- melt(mat_cor_filter_hc, na.rm = TRUE)
+  colnames(df1) <- c("node1", "node2", "edge")
+  
+  df2 <- melt(sig_cor_filter_hc, na.rm = TRUE)
+  colnames(df2) <- c("node1", "node2", "sig")
+  
+  df_net <- merge(df1, df2, by = c("node1", "node2"))
+  df_net_sig <- df_net[df_net$sig < 0.01, ]
+  df_net_sig <- df_net_sig[df_net_sig$edge != 0, ]
+
+  write.table(df_net_sig, "20250130_edge_hc_tab.txt", quote = F, sep = "\t", row.names = F)
+  
+  this_taxa <- taxa[rownames(taxa) %in% rownames(mat_cor_filter_hc), ]
+  this_taxa_color <- this_taxa[, 2]
+  
+  taxa_map <- data.frame(Full_name = rownames(this_taxa),
+                         Phylum = this_taxa[, 2],
+                         Species = this_taxa[, 7])
+  taxa_map <- taxa_map[match(taxa_map$Full_name, rownames(mat_cor_filter_hc)), ]
+  healthy_aRA <- c(aggregated_RA = rowSums(ra_mat_hc))
+  taxa_map <- merge(healthy_aRA, taxa_map)
+  colnames(taxa_map)[1] <- "Relative Abundance"
+```
+
+```{r hc_clustering, warning=FALSE, echo=FALSE, message=FALSE, fig.width=26, fig.height=24}
+  mat_cor_filter_pos <- mat_cor_filter_hc[mat_cor_filter_hc>0]
+  cls <- mcl(mat_cor_filter_hc, addLoops = TRUE)
+  print(cls)
+  cls_df <- data.frame(Species = rownames(mat_cor_filter_hc), 
+                       Cluster = cls$Cluster)
+  taxa_map <- merge(cls_df, taxa_map, by.x = "Species", by.y = "Full_name")
+  colnames(taxa_map)[1] <- "Full_name" 
+  colnames(taxa_map)[4] <- "Species" 
+  write.table(taxa_map, "20250130_node_hc_tab.txt", quote = F, sep = "\t", row.names = F)
+  knitr::kable(cls_df[, colnames(cls_df) %in% c("Phylum", "Species", "Cluster")])
+```
+
+
+
+
+
+```{r corr cmp nhc, warning=FALSE, echo=FALSE, message=FALSE, fig.width=26, fig.height=24}
+  
+  
+  ra_mat_nhc <- as.data.frame(ra_mat_filter[, colnames(ra_mat_filter) %in% nhc$subject_id])
+  ra_corr_nhc <- rcorr(t(ra_mat_nhc), type = "spearman")
+  
+  ## correlation matrix
+  mat_cor_nhc <- ra_corr_nhc$r
+  ## significance matrix
+  sig_cor_nhc <- ra_corr_nhc$P
+  
+  ## filter out the strong (abs > 0.4) and significant (P < 0.01) correlation
+  mat_cor_nhc[abs(mat_cor_nhc) < 0.3] <- 0
+  mat_cor_nhc[sig_cor_nhc > 0.01] <- 0
+  diag(mat_cor_nhc) <- 0 
+  mat_cor_nhc[is.na(mat_cor_nhc)] <- 0  # Replace NA with 0
+  
+  mat_cor_filter_nhc <- mat_cor_nhc[rowSums(mat_cor_nhc) > 0, colSums(mat_cor_nhc) > 0]
+  sig_cor_filter_nhc <- sig_cor_nhc[rowSums(mat_cor_nhc) > 0, colSums(mat_cor_nhc) > 0]
+  
+  mat_cor_filter_nhc[upper.tri(mat_cor_filter_nhc)] <- 0
+  #heatmap(mat_cor_filter, symm = TRUE, margins = c(6,6))
+
+  p2 <- pheatmap(mat_cor_filter_nhc, na_col="white",
+          border_color ="NA",  treeheight_row = 0, treeheight_col = 0, main = "Non-healthy Relative Abundance")
+
+```
+
+```{r corr_cyto_nhc, echo=TRUE, warning=FALSE, message=FALSE, eval=TRUE}
+
+  ######### Reformat for Cytoscape
+  df1 <- melt(mat_cor_filter_nhc, na.rm = TRUE)
+  colnames(df1) <- c("node1", "node2", "edge")
+  
+  df2 <- melt(sig_cor_filter_nhc, na.rm = TRUE)
+  colnames(df2) <- c("node1", "node2", "sig")
+  
+  df_net <- merge(df1, df2, by = c("node1", "node2"))
+  df_net_sig <- df_net[df_net$sig < 0.01, ]
+  df_net_sig <- df_net_sig[df_net_sig$edge != 0, ]
+
+  write.table(df_net_sig, "20250130_edge_nhc_tab.txt", quote = F, sep = "\t", row.names = F)
+  
+  this_taxa <- taxa[rownames(taxa) %in% rownames(mat_cor_filter_nhc), ]
+  this_taxa_color <- this_taxa[, 2]
+  
+  taxa_map <- data.frame(Full_name = rownames(this_taxa),
+                         Phylum = this_taxa[, 2],
+                         Species = this_taxa[, 7])
+  taxa_map <- taxa_map[match(taxa_map$Full_name, rownames(mat_cor_filter_nhc)), ]
+```
+
+```{r clustering, echo=TRUE, warning=TRUE, message=FALSE, eval=TRUE}
+  mat_cor_filter_pos <- mat_cor_filter_nhc[mat_cor_filter_nhc>0]
+  cls <- mcl(mat_cor_filter_nhc, addLoops = TRUE)
+  print(cls)
+  cls_df <- data.frame(Species = rownames(mat_cor_filter_nhc), 
+                       Cluster = cls$Cluster)
+  taxa_map <- merge(cls_df, taxa_map, by.x = "Species", by.y = "Full_name")
+  colnames(taxa_map)[1] <- "Full_name" 
+  colnames(taxa_map)[4] <- "Species" 
+  write.table(taxa_map, "20250130_node_nhc_tab.txt", quote = F, sep = "\t", row.names = F)
+  knitr::kable(cls_df[, colnames(cls_df) %in% c("Phylum", "Species", "Cluster")])
+```
+

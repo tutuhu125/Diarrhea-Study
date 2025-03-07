@@ -82,16 +82,17 @@ We then examine the counts of species across the groups.
 ```
 
 ```{r vol1, echo=FALSE, warning=FALSE, message=FALSE, fig.width=5, fig.height=4}
-  ds <- readRDS("20241124_DESeq_disease_func.rds")
+  res_ds_f <- readRDS("20241124_DESeq_disease_func.rds")
   #res_ds_f <- results(ds, alpha = 0.05)
   res_ds_f[is.na(res_ds_f$padj),] <- 1
 
-  ggplot(res_ds_f, aes(x = log2FoldChange, y = -log10(padj))) +
+  p <- ggplot(res_ds_f, aes(x = log2FoldChange, y = -log10(padj))) +
      geom_point(aes(colour = padj < 0.01), size=1) +
-     labs(x = "log2(fold change)", y = "-log10(p-value)", colour = "FDR < 1%",
+     labs(x = "log2(fold change)", y = "-log10(p-value)", colour = "FDR < 0.01",
                    title = "Non-healthy vs healthy") +
      theme_bw() +
      scale_color_manual(values = c("gray", "skyblue2"))
+  ggsave("DESeq2_FP.png", plot=p, width=8, height=6, dpi="print")
   
   # library (EnhancedVolcano)
   # EnhancedVolcano(res_ds,
@@ -107,11 +108,13 @@ We then examine the counts of species across the groups.
 #### Assignment 1 Compare the aggregated/accumulated relative abundance (aRA) of differentially abundant species between groups.
 
 ```{r healthy_aRA, warning=FALSE, message=FALSE, echo=FALSE}
-healthy_sig <- res_ds_f[res_ds_f$log2FoldChange < 1 & res_ds_f$padj < 0.01, ] 
-healthy_list <- healthy_sig@rownames
-healthy_ra <- ra[rownames(ra) %in% healthy_list, ]
-dim(healthy_ra)
-# 173 3112
+healthy_sig <- res_ds_f[res_ds_f$log2FoldChange < -1 & res_ds_f$padj < 0.01, ] 
+
+#identify differentially abundant healthy species from log2foldchange
+healthy_result <- as.data.frame(healthy_sig) %>%
+  arrange(log2FoldChange)
+#log2FoldChange = -30.00
+
 healthy_aRA_df <- data.frame(Sample_ID = colnames(healthy_ra),
                                  aRA = colSums(healthy_ra))
 metadata$Disease <- ifelse(metadata$disease == "healthy", "Healthy", "Non-healthy")
@@ -119,26 +122,29 @@ healthy_aRA_df <- merge(metadata, healthy_aRA_df)
   
 ggplot(healthy_aRA_df, aes(Disease, aRA)) +
     geom_boxplot() 
-  ## Non-healthy vs healthy --> when log2FoldChange > 1, means higher RA in Non-healthy
+  #Non-healthy vs healthy --> when log2FoldChange > 1, means higher RA in Non-healthy
 ```
+
 
 >What is the aRA distribution of species that are more abundant in healthy samples?
 Bacteroides vulgatus has aRA of 354.094, followed by Bacteroides fragilis with 58.819 aRA, and Escherichia coli with aRA of 56.474 aRA. 
 
 ```{r unhealthy_aRA, warning=FALSE, message=FALSE, echo=FALSE}
-unhealthy_sig <- res_ds_f[res_ds_f$log2FoldChange > 1 & res_ds_f$padj < 0.01, ]
-unhealthy_list <- unhealthy_sig@rownames
-unhealthy_ra <- ra[rownames(ra) %in% unhealthy_list, ]
-dim(unhealthy_ra)
-# 4 3112
+unhealthy_sig <- res_ds_f[res_ds_f$log2FoldChange > 1 & res_ds_f$padj < 0.01, ] 
+
+#identify differentially abundant healthy species from log2foldchange
+unhealthy_result <- as.data.frame(unhealthy_sig) %>%
+  arrange(log2FoldChange)
+#log2FoldChange = -30.00
+
 unhealthy_aRA_df <- data.frame(Sample_ID = colnames(unhealthy_ra),
                                  aRA = colSums(unhealthy_ra))
+metadata$Disease <- ifelse(metadata$disease == "healthy", "Healthy", "Non-healthy")
 unhealthy_aRA_df <- merge(metadata, unhealthy_aRA_df)
   
 ggplot(unhealthy_aRA_df, aes(Disease, aRA)) +
     geom_boxplot() 
-## Non-healthy vs healthy --> when log2FoldChange < 1, means lower RA in Non-healthy
-
+  #Non-healthy vs healthy --> when log2FoldChange > 1, means higher RA in Non-healthy
 ```
 
 

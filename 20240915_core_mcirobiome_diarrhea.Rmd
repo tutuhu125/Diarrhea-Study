@@ -1,0 +1,407 @@
+---
+title: "20240818_Core_gut_microbiome"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+  knitr::opts_chunk$set(echo = TRUE)
+  library(dplyr)
+  library(curatedMetagenomicData)
+  library(stringr)
+  library(ggplot2)
+  library(ggrepel)
+  library(phyloseq)
+  library(cowplot)
+  library("Hmisc") ## for corr()
+  theme_set(theme_bw())
+```
+
+### Data import and pre-processing
+
+Here we firstly extract all samples from the diarrhea related studies (namely DavidLA_2015, IaniroG_2022, KieserS_2018)
+
+```{r data_import, echo=TRUE, warning=FALSE, message=FALSE, eval=FALSE}
+  diarrhea <- filter(sampleMetadata, 
+                   study_name %in% c("DavidLA_2015", 
+                                     "IaniroG_2022", 
+                                     "KieserS_2018")) |>
+          select(where(~ !all(is.na(.x))))
+
+  diarrheaStudy <- returnSamples(diarrhea,
+                               "relative_abundance", rownames = "long")
+  saveRDS(diarrheaStudy, "20240725_diarrhea_relative_abundance.rds")
+```
+
+```{r data_import_from_rds, echo=FALSE, warning=FALSE, message=FALSE}
+  diarrheaStudy <- readRDS("20240725_diarrhea_relative_abundance.rds")
+```
+
+In total, `r nrow(colData(diarrheaStudy))` samples were extracted with their relative abundance data. 
+
+#### Assignment 1
+
+In the whole dataset, how many different disease groups can be included in our diarrhea dataset?
+
+Add more samples into the diarrhea dataset using `disease` as filter. 
+
+```{r update_dataset, echo= FALSE, eval=FALSE, message=FALSE, warning=FALSE}
+  unique(sampleMetadata$disease)
+  
+  ### define list of disease status that can be included in the dataset, and also add the corresponding healthy samples (by e.g. get healthy samples from the same study)
+disease_lst <- c("acute_diarrhoea","TKI_dependent_diarrhoea","CDI","IBD","STEC")
+study_lst<-c("DavidLA_2015", "HallAB_2017","HMP_2019_ibdmdb","IjazUZ_2017","IaniroG_2022","	IjazUZ_2017","KieserS_2018","LiJ_2014","LomanNJ_2013","NielsenHB_2014","ThomasAM_2018a","VilaAV_2018","VincentC_2016")
+  diarrheaStudy_v2 <- filter(sampleMetadata, study_name %in% study_lst)|>
+    filter(disease=="healthy" | disease %in% disease_lst)|>
+    filter(country!="CHN")|>
+    filter(body_site=="stool") |>
+    select(where(~ !all(is.na(.x)))) |>
+    returnSamples("relative_abundance", rownames = "long") #i included both diarrhea diseased samples as well as healthy controls from 3 diarrhea-focused studies
+  #remove <20 samples disease cartegories
+  #remove newborn age category
+  #within IBD, compare conturies, westernized, to remove outliers
+saveRDS(diarrheaStudy_v2, "20240818_diarrhea_relative_abundance.rds")
+```
+
+```{r additional filtering, echo= TRUE, eval=FALSE, message=FALSE, warning=FALSE}
+metadata<-colData(diarrheaStudy_v2)
+metadata<-as.data.frame(metadata)
+disease_count<-metadata%>%group_by(disease)%>%summarise(n=n())
+#all categories have count n>300
+age_count<-metadata%>%group_by(age_category)%>%summarise(n=n())
+#all categories have count n>40
+country_count<-metadata%>%group_by(country)%>%summarise(n=n())
+#there is only 7 samples for china, so we filter them out in the previous code (refer to code that retrieves diarrheaStudy_v2)
+```
+
+
+```{r data_import_rds, echo=FALSE, warning=FALSE, message=FALSE}
+  diarrheaStudy_v2 <- readRDS("20240818_diarrhea_relative_abundance.rds")
+```
+
+How many samples do we have now in the diarrhea dataset? Why do we want to include more samples in our analysis?
+
+We currently have 3317 samples in the diarrhea dataset. A large dataset is ideal because the more sample we include, the more significant and comprehensive our conclusion will be.
+
+### Community profiling at the phylum level
+
+We firstly assessed the relative abundance of each phyla in samples. 
+
+```{r plot_composition, echo=FALSE, fig.height=7, fig.width=12, message=FALSE, warning=FALSE}
+  #Relative abundance matrix
+  ra_mat <- assay(diarrheaStudy_v2)
+  metadata <- colData(diarrheaStudy_v2)
+  metadata$Sample_ID <- rownames(metadata)
+  dim(ra_mat)  # 1074 3317
+
+  ra_mat <- as.matrix(apply(ra_mat, 2, function(x) x/sum(x)))
+
+  taxa <- str_split_fixed(rownames(ra_mat), "\\|", 7)
+  colnames(taxa) <- c("Kingdom", "Phylum", "Class", "Order", "Family",
+                            "Genus", "Species")
+  rownames(taxa) <- rownames(ra_mat)
+  
+  ps <- phyloseq(otu_table(as.matrix(ra_mat), taxa_are_rows=TRUE), 
+               sample_data(as.data.frame(metadata)), 
+               tax_table(taxa))
+  ps <- transform_sample_counts(ps, function(x) x/sum(x))
+  
+  plot_bar(ps, x="Sample_ID", fill="Phylum") + 
+    facet_wrap(~disease, scales="free") +
+    geom_bar(aes(color=Phylum, fill=Phylum), 
+            stat="identity", position="stack") +
+    theme(axis.text.x=element_blank(), legend.position = "bottom") 
+    
+```
+
+#### Assignment 2
+
+Analyze the community composition, alpha diversity and beta diversity of updated dataset (v2).
+
+Alpha Diversity
+```{r alpha, message=FALSE, echo=FALSE, warning=FALSE,fig.height=7, fig.width=12}
+
+p1 <- plot_richness(ps, x="disease",
+                    measures=c("Shannon", "Simpson"), color = "age_category") +
+  geom_point(size=2, shape = 1, position = "jitter")
+p1$layers <- p1$layers[-1]
+p1 <- p1 + geom_boxplot(outlier.shape = NA, fill = NA) 
+
+plot_grid(p1)
+```
+
+Beta Diversity
+```{r beta PCoA, message=FALSE, echo=FALSE, warning=FALSE,fig.height=7, fig.width=12}
+ps.prop <- transform_sample_counts(ps, function(otu) otu/sum(otu))
+ord.nmds.bray <- ordinate(ps.prop, method="PCoA", distance="bray")
+plot_ordination(ps.prop, ord.nmds.bray, color="disease", shape = "age_category",
+                title="PCoA")
+```
+
+Since the NMDS plot are all clustering in the lower left of the graph with few outliers outliers on corners of the plot, we chose to plot PCoA graph, which produced a more accurate result. 
+
+Here we will plot the prevalence and relative abundance distribution of species in all samples. 
+
+```{r pre_ra, echo = FALSE, warning=FALSE, message=FALSE, fig.width=9, fig.height=6}
+  
+  tax_levels <- str_split_fixed(rownames(ra_mat), "\\|", 7)
+  colnames(tax_levels) <- c("Kingdom", "Phylum", "Class", "Order", "Family",
+                            "Genus", "Species")
+  tax_levels <- as.data.frame(tax_levels)
+  tax_levels$Taxonomy <- rownames(ra_mat)
+
+  ra_occu <- data.frame(Taxonomy = rownames(ra_mat),
+                      RA_mean = rowMeans(ra_mat),
+                      RA_median = rowMedians(ra_mat),
+                      Prevalence = rowSums(ra_mat>0)/ncol(ra_mat))
+  ra_occu <- merge(ra_occu, tax_levels)
+  ra_occu <- ra_occu[order(ra_occu$RA_mean, decreasing = T), ]
+  ra_occu_highlight <- ra_occu[1:5, ]
+  
+  ggplot(ra_occu, aes(RA_mean, Prevalence, color = Phylum)) + 
+    geom_point() + 
+    geom_point(data = ra_occu_highlight, size = 3) +
+    geom_text_repel(data = ra_occu_highlight,
+              aes(label = Species),
+              fontface = "italic",
+              fontsize = 4,
+              check_overlap = F, angle = 0, 
+              nudge_x = -0.005, nudge_y = -0.02) +
+    labs(x = "Average relative abundance") + 
+    theme(legend.position = "bottom") +
+    guides(col = guide_legend(nrow = 3))
+```
+
+Then we plotted similar results for healthy control samples and diarrhea samples separately.
+
+```{r pre_ra_separate, echo = FALSE, warning=FALSE, message=FALSE, fig.width=9, fig.height=10}
+  metadata <- colData(diarrheaStudy_v2)
+
+  hc <- metadata[metadata$disease == "healthy", ]
+  nhc <- metadata[metadata$disease != "healthy", ]
+  
+  ### Get the relative abundance (ra) and prevalence / occupancy (occu) of healthy samples
+  ra_mat_hc <- ra_mat[, colnames(ra_mat) %in% hc$subject_id]
+  
+  ra_occu_hc <- data.frame(Taxonomy = rownames(ra_mat_hc),
+                      RA_mean = rowMeans(ra_mat_hc),
+                      RA_median = rowMedians(ra_mat_hc),
+                      Prevalence = rowSums(ra_mat_hc>0)/ncol(ra_mat_hc),
+                      Healthy = "Yes")
+  
+  ### Get the relative abundance (ra) and prevalence / occupancy (occu) of non-healthy samples
+  ra_mat_nhc <- ra_mat[, colnames(ra_mat) %in% nhc$subject_id]
+  
+  ra_occu_nhc <- data.frame(Taxonomy = rownames(ra_mat_nhc),
+                      RA_mean = rowMeans(ra_mat_nhc),
+                      RA_median = rowMedians(ra_mat_nhc),
+                      Prevalence = rowSums(ra_mat_nhc>0)/ncol(ra_mat_nhc),
+                      Healthy = "No")
+  
+  ra_occu_hc <- merge(ra_occu_hc, tax_levels)
+  ra_occu_nhc <- merge(ra_occu_nhc, tax_levels)
+  
+  ra_occu <- rbind(ra_occu_hc, ra_occu_nhc)
+  
+  ## get the top 5 abundant species for both HC and non-HC
+  ra_occu_hc <- ra_occu_hc[order(ra_occu_hc$RA_mean, decreasing = T), ]
+  ra_occu_nhc <- ra_occu_nhc[order(ra_occu_nhc$RA_mean, decreasing = T), ]
+  ra_occu_highlight_ra <- rbind(ra_occu_hc[1:5, ], ra_occu_nhc[1:5, ])
+  
+  ## get the top 5 prevalent species for both HC and non-HC
+  ra_occu_hc <- ra_occu_hc[order(ra_occu_hc$Prevalence, decreasing = T), ]
+  ra_occu_nhc <- ra_occu_nhc[order(ra_occu_nhc$Prevalence, decreasing = T), ]
+  ra_occu_highlight_occu <- rbind(ra_occu_hc[1:5, ], ra_occu_nhc[1:5, ])
+  
+  ra_occu_highlight <- unique(rbind(ra_occu_highlight_ra, ra_occu_highlight_occu))
+  
+  ggplot(ra_occu, aes(RA_mean, Prevalence, color = Phylum)) + 
+    geom_point() + 
+    geom_point(data = ra_occu_highlight, size = 3) +
+    geom_text_repel(data = ra_occu_highlight,
+              aes(label = Species),
+              fontface = "italic",
+              fontsize = 4,
+              check_overlap = F, angle = 0, 
+              nudge_x = -0.005, nudge_y = -0.02) +
+    facet_wrap(~Healthy, nrow = 2, scales = "free") +
+    labs(x = "Average relative abundance") + 
+    theme(legend.position = "bottom") +
+    guides(col = guide_legend(nrow = 3))
+```
+
+
+### Identify core microbiota of diarrhea dataset
+
+We firstly would filter out the rare species, i.e. species that appears in very few samples with very low relative abundance.
+
+Here we use an arbitrary threshold of 5% samples and 0.001% relative abundance.
+
+```
+Why do we need to do the filtering here?
+What do you think about these threshold? 
+Try to filter with different ones and see how the dataset changes.
+```
+We need to filter out the rare species so they don't produce outliers or matching zeros that would interfere with future correlation analysis and other downstream analysis. I did a filtering of 10% prevalence and at least 0.001% relative abundance. In that way, a total of 181 taxa would remain.
+
+I found a portential filtering method that uses permutations to filter out rare species, but I'm not entirely sure how to use it. Here is the website of the tool: https://academic.oup.com/biostatistics/article/20/4/615/5039878
+
+```{r filter_rare, echo=FALSE, warning=FALSE, message=FALSE}
+  n_sample <- ncol(ra_mat)
+  n_sample_filter <- round(n_sample*0.1)
+  
+  ra_mat_filter1 <- ra_mat[rowSums(ra_mat > 0) > n_sample_filter, ]
+  ra_mat_filter2 <- ra_mat[rowSums(ra_mat) / n_sample > 0.00001, ]
+  
+  pass_filter <- intersect(rownames(ra_mat_filter1), rownames(ra_mat_filter2))
+  
+  ra_mat_filter <- ra_mat[pass_filter, ]
+  
+  dim(ra_mat_filter) #159 3317
+  
+  ## re-normalize the relative abundance by column
+  ra_mat_filter <-  as.matrix(apply(ra_mat_filter, 2, function(x) x/sum(x)))
+  
+```
+
+#### Assignment 3
+
+Define and identify core gut microbiome of updated dataset under different conditions, including healthy, CDI, IBD.
+
+Hint: define core microbiome using relative abundance and prevalence / occupancy information at higher taxonomic levels.
+e.g. for genus appeared in more than 80% of samples from specific cohort, define it as the core genus of that cohort. 
+
+```{r core, echo=FALSE, warning=FALSE, message=FALSE}
+#ref website: https://microbiome.github.io/tutorials/Core.html
+#library(devtools)
+#install_github("microbiome/microbiome")
+#https://david-barnett.github.io/microViz/
+#install.packages(
+ # "microViz",
+#  repos = c(davidbarnett = "https://david-barnett.r-universe.dev", getOption("repos"))
+#)
+library(microViz)
+library(microbiome)
+pseq.rel <- microbiome::transform(ps, "compositional")
+#healthy core microbiome
+ps_healthy<-ps_filter(pseq.rel,disease=="healthy")
+ps_health_core <- aggregate_rare(ps_healthy, level="Genus",detection=0, prevalence = .8)
+#14 members
+ps_IBD<-ps_filter(pseq.rel,disease=="IBD")
+ps_IBD_core <- aggregate_rare(ps_IBD, level="Genus",detection=0, prevalence = .8)
+#8 members
+ps_CDI<-ps_filter(pseq.rel,disease=="CDI")
+ps_CDI_core <- aggregate_rare(ps_CDI, level="Genus",detection=0, prevalence = .8)
+#5 members
+ps_ad<-ps_filter(pseq.rel,disease=="acute_diarrhoea")
+ps_ad_core <- aggregate_rare(ps_ad, level="Genus",detection=0, prevalence = .8)
+#3 members
+ps_TKI<-ps_filter(pseq.rel,disease=="TKI_dependent_diarrhoea")
+ps_TKI_core <- aggregate_rare(ps_TKI, level="Genus",detection=0, prevalence = .8)
+#21 members
+ps_STEC<-ps_filter(pseq.rel,disease=="STEC")
+ps_STEC_core <- aggregate_rare(ps_STEC, level="Genus",detection=0, prevalence = .8)
+#3 members
+```
+
+### Correlation between microbial species 
+
+We also assess the correlation between species across all samples from the whole diarrhea.
+
+```{r corr, echo=FALSE, warning=FALSE, message=FALSE}
+  ra_corr <- rcorr(t(ra_mat_filter), type = "spearman")
+  
+  ## correlation matrix
+  mat_cor <- ra_corr$r
+  ## significance matrix
+  sig_cor <- ra_corr$P
+  
+  ## filter out the strong (abs > 0.6) and significant (P < 0.01) correlation
+  mat_cor[abs(mat_cor) < 0.6] <- 0
+  mat_cor[sig_cor > 0.01] <- 0
+  diag(mat_cor) <- 0 
+  
+  mat_cor_filter <- mat_cor[rowSums(mat_cor) > 0, colSums(mat_cor) > 0]
+  
+  this_taxa <- taxa[rownames(taxa) %in% rownames(mat_cor_filter), ]
+  this_taxa_color <- this_taxa[, 2]
+  
+  heatmap(mat_cor_filter, symm = TRUE, margins = c(6,6))
+```
+
+```
+What do we observe here? 
+
+```
+We observed that there are some strong correlation occured within the filtered relative abundance datasets, with the strongest r value being roughly 0.84. However, whether the absolute value of species correlate or not is hard to determine given the fact that relative abundance may cause false shift in correlations.
+
+#### Assignment 4
+
+So far we have been looking at `relative abundance` matrix, please analyze the functional diversity of gut microbiome of diarrhea dataset using the same method
+
+### Retrieving pathway abundance data
+```{r update_dataset2, echo= FALSE, eval=FALSE, message=FALSE, warning=FALSE}
+diarrheaStudy_v3 <- filter(sampleMetadata, study_name %in% study_lst)|>
+    filter(disease=="healthy" | disease %in% disease_lst)|>
+    filter(country!="CHN")|>
+    filter(body_site=="stool") |>
+    select(where(~ !all(is.na(.x)))) |>
+    returnSamples("pathway_abundance", rownames = "long")
+#save the pathway abundance into rds file
+saveRDS(diarrheaStudy_v3, "20240818_diarrhea_pathway_abundance.rds")
+```
+
+```{r data_import_rds, echo=FALSE, warning=FALSE, message=FALSE}
+  diarrheaStudy_v3 <- readRDS("20240818_diarrhea_pathway_abundance.rds")
+```
+
+```{r assay_table, warning=FALSE, message=FALSE, echo = FALSE}
+  ## pathway abundance matrix
+  ra_mat <- assay(diarrheaStudy_v3)
+  dim(ra_mat)  # 50126 3317
+    
+```
+
+
+```{r filter_path2, echo=FALSE, warning=FALSE, message=FALSE}
+  n_sample <- ncol(ra_mat)
+  n_sample_filter <- round(n_sample*0.05)
+  
+  ra_mat_filter1 <- ra_mat[rowSums(ra_mat > 0) > n_sample_filter, ]
+  ra_mat_filter2 <- ra_mat[rowSums(ra_mat) / n_sample > 0.00001, ]
+  
+  pass_filter <- intersect(rownames(ra_mat_filter1), rownames(ra_mat_filter2))
+  
+  ra_mat_filter <- ra_mat[pass_filter, ]
+  
+  dim(ra_mat_filter) #962 3317
+  
+  ## re-normalize the relative abundance by column
+  ra_mat_filter <-  as.matrix(apply(ra_mat_filter, 2, function(x) x/sum(x)))
+  
+```
+
+
+```{r corr2, echo=FALSE, warning=FALSE, message=FALSE}
+  ra_corr <- rcorr(t(ra_mat_filter), type = "spearman")
+
+  ## correlation matrix
+  mat_cor <- ra_corr$r
+  ## significance matrix
+  sig_cor <- ra_corr$P
+  
+  ## filter out the strong (abs > 0.6) and significant (P < 0.01) correlation
+  mat_cor[abs(mat_cor) < 0.6] <- 0
+  mat_cor[sig_cor > 0.01] <- 0
+  diag(mat_cor) <- 0 
+  
+  mat_cor_filter <- mat_cor[rowSums(mat_cor) > 0, colSums(mat_cor) > 0]
+  func <- str_split_fixed(rownames(ra_mat), "\\|", 2)
+  colnames(func) <- c("Path","Taxa")
+  rownames(func) <- rownames(ra_mat)
+  this_func <- func[rownames(ra_mat) %in% rownames(mat_cor_filter), ]
+  this_func_color <- this_func[, 2]
+  
+  heatmap(mat_cor_filter, symm = TRUE, margins = c(6,6))
+```
+#### References

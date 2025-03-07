@@ -11,6 +11,8 @@ date: "`r Sys.Date()`"
   library(ggplot2)
   library(phyloseq)
   library(vegan)
+  library(ggpubr)
+
   
   theme_set(theme_bw())
 ```
@@ -52,22 +54,60 @@ We compare the alpha diversity of different age categories and test if they are 
     scale_fill_manual(values = c("salmon", "darkolivegreen3"))
 ```
 
-```{r alpha_pairwise_wilcox_t_test, warning=FALSE, message=FALSE, echo = FALSE}
+```{r alpha_pairwise_wilcox_t_test, warning=FALSE, message=FALSE, echo = FALSE, fig.width=10, fig.height=8}
   alpha_child <- metadata[metadata$age_category == "child", ]$Shannon
   alpha_school <- metadata[metadata$age_category == "schoolage", ]$Shannon
   
   t.test(alpha_child, alpha_school)
   
   pairwise.t.test(alpha, metadata$age_category)
-  
+  tapply(alpha, metadata$age_category, mean)
   pairwise.wilcox.test(alpha, metadata$age_category)
-  pairwise.wilcox.test(alpha, metadata$Healthy)
-  pairwise.wilcox.test(alpha, metadata$disease)
+  p1 <- ggboxplot(metadata, x = "age_category", y = "Shannon", 
+          color = "age_category", palette = "rainbow") +
+  stat_compare_means(method = "t.test", 
+                     comparisons = list(c("child", "schoolage"), c("adult","senior")), 
+                     label = "p.signif") +
+  labs(title = "Alpha Values by Age Category", 
+       x = "Age Category", 
+       y = "Alpha Diversity") 
+  # only child & schoolage are insignificant
+ 
   
-  pairwise.t.test(alpha, metadata$disease, p.adjust.method = "bonf")
-  pairwise.t.test(alpha, metadata$Healthy, p.adjust.method = "bonf")
+  pairwise.t.test(alpha, metadata$disease)
+  tapply(alpha, metadata$disease, mean)
+  pairwise.wilcox.test(alpha, metadata$disease)
+  p2 <- ggboxplot(metadata, x = "disease", y = "Shannon", 
+          color = "disease", palette = "rainbow") +
+  stat_compare_means(method = "t.test", 
+                     comparisons = list(c("CDI", "healthy"), c("CDI","IBD"), c("CDI", "STEC"), c("STEC", "healthy"), c("IBD", "STEC")), 
+                     label = "p.signif") +
+  labs(title = "Alpha Values by Diseases", 
+       x = "Diseases", 
+       y = "Alpha Diversity")
+  
+  pairwise.t.test(alpha, metadata$country)
+  tapply(alpha, metadata$country, mean)
+  pairwise.wilcox.test(alpha, metadata$country)
+  p3 <- ggboxplot(metadata, x = "country", y = "Shannon", 
+          color = "country", palette = "rainbow") +
+  stat_compare_means(method = "t.test", 
+                     comparisons = list(c("CAN", "DEU"), c("CAN","GBR"), c("DEU", "GBR"), c("ITA", "DEU"), c("NLD", "DNK"), c("USA", "GBR")), 
+                     label = "p.signif") +
+  labs(title = "Alpha Values by Countries", 
+       x = "Country", 
+       y = "Alpha Diversity") 
+  #USA & CAN p-value < 0.05
+    
+    pairwise.wilcox.test(alpha, metadata$Healthy)
 
   ## Try and compare different grouping with diverse metadata : )
+  
+  # Example dataset
+  ggsave("Alpha_AgeCategory.png", plot=p1, height=6, width=8)
+  ggsave("Alpha_Disease.png", plot=p2, height=6, width=9, dpi="print")
+  ggsave("Alpha_Country.png", plot=p3, height=6, width=8)
+
 ```
 
 ANOVA test comparing alpha diversities between different groups.
@@ -165,7 +205,6 @@ ps_core<- aggregate_rare(pseq.rel,level="Genus",detection=0, prevalence = .8)
   pairwise.t.test(core_sum, group_labels, p.adjust.method="bonf")
   summary(aov(core_sum ~ group_labels))
 
-  #QUESTION: HOW DO WE DO THE NORMALIZATION ON AGGREGATED RA WITH DIFFERENT SAMPLE SIZES? 
 ```
 What species/genera are included in the core microbiota of all samples? What are the aggregated RA of those species/genera under different conditions? Are they significantly different?
 
@@ -263,23 +302,22 @@ To investigate the beta-diversity of this big dataset, firstly, we will filter o
 After the filtering, we observed some samples have very low leftover accumulated relative abundance, we plotted the distribution of number of left taxa in each sample and the histogram shows that most of the samples have around 50 species. Therefore, we shall move those samples with 0 species detected. 
 
 
-```{r beta_PCoA_age, warning=FALSE, message=FALSE, echo = FALSE, fig.width=8, fig.height=8}
+```{r beta_PCoA_age, warning=FALSE, message=FALSE, echo = FALSE, fig.width=10, fig.height=8}
   ra_mat_filter <- apply(ra_mat_filter, 2, function(x) x/sum(x))
-  metadata$disease <- ifelse(metadata$disease == "healthy", "Healthy",
-                                     ifelse(metadata$disease == "IBD", "IBD",
-                                            "Others (CDI, STEC, TKI dependent diarrhea, and acute diarrhea)"))
+  metadata$Disease <- ifelse(metadata$disease == "Healthy", "Healthy","Non-healthy")
 
   ps.prop <- phyloseq(otu_table(as.matrix(ra_mat_filter), taxa_are_rows=TRUE), 
                sample_data(as.data.frame(metadata)))
 
   ord.nmds.bray <- ordinate(ps.prop, method="PCoA", distance="bray")
-  plot_ordination(ps.prop, ord.nmds.bray, color="Healthy", shape="disease",
+  p <- plot_ordination(ps.prop, ord.nmds.bray, color="Disease", shape="disease",
                 title="Bray-Curtis PCoA") + 
     facet_wrap(~ age_category, scales = "free") +
     scale_color_manual(values = c("salmon", "darkolivegreen3")) +
     scale_shape_manual(values = c(16, 1, 2)) +
     theme(legend.position = "top")
-    
+  ggsave("beta_diversity.png", plot=p, height=6,width=9.5)
+
 ```
 
 We do not observe any separation between different groups, therefore, we need to statistically test if those factors (metadata, e.g. study condition) significantly affect the beta-diversity of gut microbiome. Due to the sample size, this step needs more memory than a normal laptop, therefore we set the permutation times here as 19 to get P value that is no more than 0.05 (usually 999).

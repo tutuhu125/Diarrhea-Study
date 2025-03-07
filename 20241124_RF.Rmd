@@ -1,0 +1,523 @@
+---
+title: "20241123_random_forest_example"
+output: html_document
+date: "2024-11-23"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# load library
+library(caret)
+library(randomForest)
+
+# additional library for data tidying later
+library(tidyr)
+library(phyloseq)
+library(DESeq2)
+library(tidyverse)
+```
+
+
+## Classification of healthy and non-healthy samples
+
+This RMarkdown file is modified from Chapter 7 of __Exploring microbiome analysis using R__ by _Nabiilah Ardini Fauziyyah_. In this section we will demonstrate examples for doing supervised learning (a classification task) using microbiome data.
+
+The classification task enhanced by microbiome data relies on the sample we have, which was obtained based on a research question. Our research question provide a design where we can obtain sample from _healthy_ or _non-healthy_ (different types of diarrhea) human. After microbiome analysis, we knew that microbiome composition change between conditions. Therefore, we can try classify whether a sample is healthy or nonhealthy based on the its gut microbial composition.
+
+The package `caret` provides various functions for machine learning algorithm. We’ll try using the robust __Random Forest__ algorithm on this one. For that we also need a `randomForest` package. 
+
+```{r readin_data, echo=TRUE, warning=FALSE, message=FALSE, eval = TRUE}
+  ### load the saved 'curatedMetagenomics' data
+  dia_v5_ra <- readRDS("20241006_diarrhea_v5_counts.rds")
+  colData(dia_v5_ra)$Disease <- ifelse(colData(dia_v5_ra)$disease == "healthy", 
+                                       "Healthy", "Non-healthy")
+```
+
+```{r rf_0, echo=TRUE, warning=FALSE, message=FALSE, eval = TRUE}
+  ### get the taxa table
+  ra_mat <- assay(dia_v5_ra)
+  taxa <- str_split_fixed(rownames(ra_mat), "\\|", 7)
+  colnames(taxa) <- c("Kingdom", "Phylum", "Class", "Order", "Family",
+                            "Genus", "Species")
+  rownames(taxa) <- rownames(ra_mat)
+  
+  ### define a phyloseq data object
+  dia_asv <- phyloseq(otu_table(assay(dia_v5_ra), taxa_are_rows = TRUE),
+                      sample_data(as.data.frame(colData(dia_v5_ra))),
+                      tax_table(taxa))
+  
+  dia_asv@otu_table[1:3, 1:3]
+  
+  ### Transform /normalize feature table
+  dia_asv <- transform_sample_counts(dia_asv, function(x) log(1+x)) 
+  dia_asv@otu_table[1:3, 1:3]
+```
+
+```{r rf_1, echo=TRUE, warning=FALSE, message=FALSE, eval = TRUE}
+  data_ml <- data.frame(Disease = sample_data(dia_asv)$Disease, t(otu_table(dia_asv)))
+  #head(data_ml)
+```
+
+The first step of classification (or any machine learning task) is to divide our data into train and test set. to ensure that the test set realistically simulates the collection of new data, we will be using random sampling to split the data.
+
+
+```{r rf_2, echo=TRUE, warning=FALSE, message=FALSE, eval = TRUE}
+  # get index for sampling
+  set.seed(100)
+  idx_train <- sample(nrow(sample_data(dia_asv)), 
+                      size = nrow(sample_data(dia_asv))*0.8)
+  
+  # splitting train-test
+  training <- data_ml[idx_train,]
+  testing <- data_ml[-idx_train,]
+```
+
+Once we split the data, we can use the train function to fit the Random Forest model.
+
+```{r rf_3, echo=TRUE, warning=FALSE, message=FALSE, eval = FALSE}
+  rfFit <- train(Disease ~ ., data = training, method = "rf")
+  
+  rfFit
+  saveRDS(rfFit, "20241124_rf_fit.rds")
+```
+
+Next we can predict Disease labels on the test set using `predict()` function.
+
+```{r rf_4, echo=TRUE, warning=FALSE, message=FALSE, eval = TRUE}
+  rfFit <- readRDS("20241124_rf_fit.rds")
+  rfClasses <- predict(rfFit, newdata = testing)
+```
+
+Then we can do a quick model evaluation by using simple confusion matrix.
+ 
+```{r rf_5, echo=TRUE, warning=FALSE, message=FALSE, eval = TRUE}
+  # other options use: `confusionMatrix()`
+  table(pred = rfClasses, 
+      actual = testing$Disease)
+```
+
+To better understand the fitted random forest model, we can identify which microbe have the highest influence in the random forest prediction. We can use the function `importance()` from `randomForest` package and to find out each variable or in our case microbial species importance:
+
+```{r rf_6, echo = TRUE, warning=FALSE, message=FALSE, eval=TRUE}
+  head(importance(rfFit$finalModel))
+  
+  # filter microbes with the highest importance
+  max_index <- which.max(importance(rfFit$finalModel))
+  rfFit$finalModel$importance[max_index]
+  
+  this_microbe <- rownames(rfFit$finalModel$importance)[max_index]
+  this_microbe
+```
+
+The function above shown all the variable importance, but we only need one microbe with the highest importance. Let’s use some function to simply take out that microbe and find out its taxonomy so we can analyze it further.
+
+This turns out to be a microbe from order __Clostridiales__, family __Ruminococcaceae__, and genus __Gemmiger__. Let’s try plots its abundance across samples.
+
+```{r rf_7, echo = TRUE, warning=FALSE, message=FALSE, eval=TRUE}
+  # get microbial abundance
+  this_microbe <- gsub('\\.', "|", this_microbe)
+  
+  imp_abd <- as.vector(otu_table(dia_asv)[rownames(otu_table(dia_asv)) == this_microbe, ])
+
+  # combine with sample data
+  imp_df <- data.frame(sample_data(dia_asv),
+                       abund = imp_abd)
+
+  # plotting
+  imp_plot<- ggplot(imp_df, aes(x = abund)) + 
+    geom_density(aes(fill = Disease),
+                alpha = 0.5) +
+    labs(title = "Abundance of Discriminative Species",
+       subtitle = "Gemmiger formicilis",
+       x = "Abundance",
+       y = "Density of samples",
+       fill = "Disease") +
+    theme_minimal()
+  imp_plot
+```
+
+We can also track down several microbes that have high influence on the model decision:
+
+```{r rf_8, echo = TRUE, warning=FALSE, message=FALSE, eval=TRUE}
+  # obtain the importance of microbes on rf model
+  rf_imp <- data.frame(importance(rfFit$finalModel))
+
+  # obtain 6 microbes with highest importance
+  rf_imp %>% 
+    mutate(ASV = rownames(.)) %>% 
+    arrange(desc(MeanDecreaseGini)) %>% 
+    head(6)
+  
+  # saving ASV to object
+  asv_imp <- rf_imp %>% 
+    mutate(ASV = rownames(.)) %>% 
+    arrange(desc(MeanDecreaseGini)) %>% 
+    head(6) %>% 
+    pull(ASV)
+  
+  asv_imp <- gsub("\\.", "|", asv_imp)
+  
+  asv_imp
+```
+
+The above microbes may distinguish greatly between healthy and unhealthy samples. Below are the visualization of the abundance for those microbes:
+
+```{r rf_9, echo = TRUE, warning=FALSE, message=FALSE, eval=TRUE}
+  # get microbial abundance
+  imp_abd_asv <- data.frame(t(otu_table(dia_asv)[asv_imp, ]))
+  
+  asv_imp <- gsub("\\|", "\\.", asv_imp)
+  # combine with sample data
+  imp_df_asv <- data.frame(sample_data(dia_asv)) %>% 
+    cbind(imp_abd_asv) %>% 
+    pivot_longer(cols = asv_imp, names_to = "ASV", values_to = "Abundance")
+  
+  taxa <- as.data.frame(taxa)
+  taxa$ASV <- gsub("\\|", "\\.", rownames(taxa))
+  imp_df_asv <- merge(imp_df_asv, taxa)
+                       
+  # plotting
+  ggplot(imp_df_asv, aes(x = Abundance)) + 
+    geom_density(aes(fill = Disease),
+                alpha = 0.5) +
+    facet_wrap(~Species, scales = "free") +
+    labs(title = "Abundance of Discriminative Species",
+       x = "Abundance",
+       y = "Density of samples",
+       fill = "Disease") +
+    theme_minimal()
+```
+
+##  Classification of healthy and non-healthy samples with differentially present species
+
+__Assignments:__
+Before, we identified significantly differentially present species using _DESeq2_, following on that, we will use Random Forest to classify the microbiome into healthy and nonhealthy groups. We will test if by only using those differently abundant species (abs(log2FC) > 1 & padj < 0.01) the prediction gets improved.
+```{r rf_0.1, echo=TRUE, warning=FALSE, message=FALSE, eval = TRUE}
+  ### get the taxa table
+  ds <- readRDS("20241020_DESeq_disease.rds")
+
+  res_ds <- results(ds, alpha = 0.05)
+  res_ds[is.na(res_ds$padj),] <- 1
+  ds_sig <- res_ds[((res_ds$log2FoldChange < -1 & res_ds$padj < 0.01) | 
+                  (res_ds$log2FoldChange > 1 & res_ds$padj < 0.01)), ]
+  rownames_ds <- rownames(ds_sig)
+  ra_mat <- assay(dia_v5_ra)
+  dim(ra_mat)
+  #1024 3112
+  
+  filtered_ra_mat <- ra_mat[(rownames(ra_mat) %in% rownames_ds), ]
+  dim(filtered_ra_mat)
+  #206 3112
+  
+  taxa_ds <- str_split_fixed(rownames(filtered_ra_mat), "\\|", 7)
+  colnames(taxa_ds) <- c("Kingdom", "Phylum", "Class", "Order", "Family",
+                            "Genus", "Species")
+  rownames(taxa_ds) <- rownames(filtered_ra_mat)
+  
+  ### define a phyloseq data object
+  ds_asv <- phyloseq(otu_table(filtered_ra_mat, taxa_are_rows = TRUE),
+                      sample_data(as.data.frame(colData(ds))),
+                      tax_table(taxa_ds))
+  
+  ds_asv@otu_table[1:3, 1:3]
+  
+  ### Transform /normalize feature table
+  ds_asv <- transform_sample_counts(ds_asv, function(x) log(1+x)) 
+  ds_asv@otu_table[1:3, 1:3]
+```
+```{r rf_1.1, echo=TRUE, warning=FALSE, message=FALSE, eval = TRUE}
+  data_ml_ds <- data.frame(Disease = sample_data(ds_asv)$Disease, t(otu_table(ds_asv)))
+  #head(data_ml)
+```
+
+```{r rf_2.1, echo=TRUE, warning=FALSE, message=FALSE, eval = TRUE}
+  # get index for sampling
+  set.seed(100)
+  idx_train_ds <- sample(nrow(sample_data(ds_asv)), 
+                      size = nrow(sample_data(ds_asv))*0.8)
+  
+  # splitting train-test
+  training_ds <- data_ml_ds[idx_train_ds,]
+  testing_ds <- data_ml_ds[-idx_train_ds,]
+```
+
+```{r rf_3.1, echo=TRUE, warning=FALSE, message=FALSE, eval = FALSE}
+  rfFit_ds <- train(Disease ~ ., data = training_ds, method = "rf")
+  
+  rfFit_ds
+  saveRDS(rfFit_ds, "20241124_rf_fit_deseq2.rds")
+```
+
+```{r rf_4.1, echo=TRUE, warning=FALSE, message=FALSE, eval = TRUE}
+  rfFit_ds <- readRDS("20241124_rf_fit_deseq2.rds")
+  rfClasses_ds <- predict(rfFit_ds, newdata = testing_ds)
+```
+
+```{r rf_5.1, echo=TRUE, warning=FALSE, message=FALSE, eval = TRUE}
+  # other options use: `confusionMatrix()`
+  table(pred = rfClasses_ds, 
+      actual = testing_ds$Disease)
+```
+#RandomForest performs way worse
+
+
+```{r rf_6.1, echo = TRUE, warning=FALSE, message=FALSE, eval=TRUE}
+  head(importance(rfFit_ds$finalModel))
+  
+  # filter microbes with the highest importance
+  max_index <- which.max(importance(rfFit_ds$finalModel))
+  rfFit_ds$finalModel$importance[max_index]
+  
+  this_microbe_ds <- rownames(rfFit_ds$finalModel$importance)[max_index]
+  this_microbe_ds
+```
+
+```{r rf_7.1, echo = TRUE, warning=FALSE, message=FALSE, eval=TRUE}
+  # get microbial abundance
+  this_microbe_ds <- gsub('\\.', "\\|", this_microbe_ds)
+  
+  imp_abd_ds <- as.vector(otu_table(ds_asv)[rownames(otu_table(ds_asv)) == this_microbe_ds, ])
+
+  # combine with sample data
+  imp_df_ds <- data.frame(sample_data(ds_asv),
+                       abund = imp_abd_ds)
+
+  # plotting
+  imp_plot_ds<- ggplot(imp_df_ds, aes(x = abund)) + 
+    geom_density(aes(fill = Disease),
+                alpha = 0.5) +
+    labs(title = "Abundance of Discriminative Species",
+       subtitle = "Gemmiger formicilis",
+       x = "Abundance",
+       y = "Density of samples",
+       fill = "Disease") +
+    theme_minimal()
+  imp_plot_ds
+```
+
+```{r rf_8.1, echo = TRUE, warning=FALSE, message=FALSE, eval=TRUE}
+  # obtain the importance of microbes on rf model
+  rf_imp_ds <- data.frame(importance(rfFit_ds$finalModel))
+
+  # obtain 6 microbes with highest importance
+  # rf_imp_ds |>
+    # mutate(ASV = rownames(rf_imp_ds))#|>
+    # arrange(desc(MeanDecreaseGini)) |>
+    # head(6)
+  
+  # saving ASV to object
+  asv_imp_ds <- rf_imp_ds %>% 
+    mutate(ASV = rownames(.)) %>% 
+    arrange(desc(MeanDecreaseGini)) %>% 
+    head(6) %>% 
+    pull(ASV)
+  
+  asv_imp_ds <- gsub("\\.", "|", asv_imp_ds)
+  
+  asv_imp_ds
+```
+
+```{r rf_9.1, echo = TRUE, warning=FALSE, message=FALSE, eval=TRUE}
+  # get microbial abundance
+  #imp_abd_asv <- data.frame(t(otu_table(dia_asv)[asv_imp, ]))
+  imp_abd_asv_ds <- data.frame((otu_table(ds_asv)[asv_imp_ds, ])) 
+  #asv_imp_ds=NULL
+  
+  asv_imp_ds <- gsub("\\|", "\\.", asv_imp_ds)
+  # combine with sample data
+  imp_df_asv_ds <- data.frame(sample_data(ds_asv)) %>% 
+    cbind(imp_abd_asv_ds) %>% 
+    pivot_longer(cols = asv_imp_ds, names_to = "ASV", values_to = "Abundance")
+  
+  taxa_ds <- as.data.frame(taxa_ds)
+  taxa_ds$ASV <- gsub("\\|", "\\.", rownames(taxa_ds))
+  imp_df_asv_ds <- merge(imp_df_asv_ds, taxa_ds)
+                       
+  # plotting
+  ggplot(imp_df_asv_ds, aes(x = Abundance)) + 
+    geom_density(aes(fill = Disease),
+                alpha = 0.5) +
+    facet_wrap(~Species, scales = "free") +
+    labs(title = "Abundance of Discriminative Species",
+       x = "Abundance",
+       y = "Density of samples",
+       fill = "Disease") +
+    theme_minimal()
+```
+
+##  Classification of healthy and non-healthy samples with pathway abundance data
+Assignment #2: Functional Pathyway abundance random forest. 
+
+##Functional Pathway + DESEQ2
+
+```{r rf_0.3, echo=TRUE, warning=FALSE, message=FALSE, eval = TRUE}
+  ### get the taxa table
+  res_dsf <- readRDS("20241124_DESeq_disease_func.rds")
+  dsf_sig <- res_dsf[((res_dsf$log2FoldChange < -1 & res_dsf$padj < 0.01) | 
+                  (res_dsf$log2FoldChange > 1 & res_dsf$padj < 0.01)), ]
+  rownames_dsf <- rownames(dsf_sig)
+  dia_f <- readRDS("20241006_diarrhea_v5_func.rds")
+  fp_mat <- assay(dia_f)
+  colData(dia_f)$Disease <- ifelse(colData(dia_f)$disease == "healthy", 
+                                     "Healthy", "Non-healthy")
+  dim(fp_mat)
+  #41009 3112
+  
+  filtered_ra_mat_dsf <- fp_mat[(rownames(fp_mat) %in% rownames_dsf), ]
+  dim(filtered_ra_mat_dsf)
+  #177 3112
+  
+  taxa_dsf <- str_split_fixed(rownames(filtered_ra_mat_dsf), "\\|", 7)
+  colnames(taxa_dsf) <- c("Kingdom", "Phylum", "Class", "Order", "Family",
+                            "Genus", "Species")
+  rownames(taxa_dsf) <- rownames(filtered_ra_mat_dsf)
+  
+  ### define a phyloseq data object
+  dsf_asv <- phyloseq(otu_table(filtered_ra_mat_dsf, taxa_are_rows = TRUE),
+                      sample_data(as.data.frame(colData(dia_f))),
+                      tax_table(taxa_dsf))
+  
+  dsf_asv@otu_table[1:3, 1:3]
+  
+  ### Transform /normalize feature table
+  dsf_asv <- transform_sample_counts(dsf_asv, function(x) log(1+x)) 
+  dsf_asv@otu_table[1:3, 1:3]
+```
+
+```{r rf_1.3, echo=TRUE, warning=FALSE, message=FALSE, eval = TRUE}
+  data_ml_dsf <- data.frame(Disease = sample_data(dsf_asv)$Disease, t(otu_table(dsf_asv)))
+  #head(data_ml)
+```
+
+```{r rf_2.3, echo=TRUE, warning=FALSE, message=FALSE, eval = TRUE}
+  # get index for sampling
+  set.seed(100)
+  idx_train_dsf <- sample(nrow(sample_data(dsf_asv)), 
+                      size = nrow(sample_data(dsf_asv))*0.8)
+  
+  # splitting train-test
+  training_dsf <- data_ml_dsf[idx_train_dsf,]
+  testing_dsf <- data_ml_dsf[-idx_train_dsf,]
+```
+
+```{r rf_3.3, echo=TRUE, warning=FALSE, message=FALSE, eval = FALSE}
+  rfFit_dsf <- train(Disease ~ ., data = training_dsf, method = "rf")
+  
+  rfFit_dsf
+  saveRDS(rfFit_dsf, "20241124_rf_fit_deseq2_func.rds")
+```
+
+```{r rf_4.3, echo=TRUE, warning=FALSE, message=FALSE, eval = TRUE}
+  rfFit_dsf <- readRDS("20241124_rf_fit_deseq2_func.rds")
+  rfClasses_dsf <- predict(rfFit_dsf, newdata = testing_dsf)
+```
+
+```{r rf_5.3, echo=TRUE, warning=FALSE, message=FALSE, eval = TRUE}
+  # other options use: `confusionMatrix()`
+  table(pred = rfClasses_dsf, 
+      actual = testing_dsf$Disease)
+```
+
+```{r rf_6.3, echo = TRUE, warning=FALSE, message=FALSE, eval=TRUE}
+  head(importance(rfFit_dsf$finalModel))
+  
+  # filter microbes with the highest importance
+  max_index <- which.max(importance(rfFit_dsf$finalModel))
+  rfFit_dsf$finalModel$importance[max_index]
+  
+  this_microbe_dsf <- rownames(rfFit_dsf$finalModel$importance)[max_index]
+  this_microbe_dsf
+```
+
+```{r rf_7.3, echo = TRUE, warning=FALSE, message=FALSE, eval=TRUE}
+  # get microbial abundance
+  # this_microbe_dsf <- gsub('\\.', ' ', this_microbe_dsf) 
+  # functional pathway name not separated by '|'
+
+  ### DEBUG
+  new_taxa_names <- gsub(' ', '_', taxa_names(dsf_asv))
+  new_taxa_names <- gsub(':', '_', new_taxa_names) #sub ':'
+  new_taxa_names <- gsub('-', '_', new_taxa_names) #sub '-'
+  new_taxa_names <- gsub(',', '_', new_taxa_names)
+  new_taxa_names <- gsub('\\(', '_', new_taxa_names) #sub '-'
+  new_taxa_names <- gsub('\\)', '_', new_taxa_names)
+  
+  taxa_names(dsf_asv)
+  
+  taxa_names(dsf_asv) <- new_taxa_names
+  ###
+  this_microbe_dsf <- gsub('\\.', '_', this_microbe_dsf) 
+  imp_abd_dsf <- as.vector(otu_table(dsf_asv)[rownames(otu_table(dsf_asv)) == this_microbe_dsf, ])
+
+  # combine with sample data
+  imp_df_dsf <- data.frame(sample_data(dsf_asv),
+                       abund = imp_abd_dsf)
+
+  # plotting
+  imp_plot_dsf<- ggplot(imp_df_dsf, aes(x = abund)) + 
+    geom_density(aes(fill = Disease),
+                alpha = 0.5) +
+    labs(title = "Abundance of Discriminative Functional Pathways",
+       subtitle = "GOLPDLCAT_PWY__superpathway_of_glycerol_degradation_to_1_3_propanediol",
+       x = "Abundance",
+       y = "Density of samples",
+       fill = "Disease") +
+    theme_minimal()
+  imp_plot_dsf
+```
+
+```{r rf_8.3, echo = TRUE, warning=FALSE, message=FALSE, eval=TRUE}
+  # obtain the importance of microbes on rf model
+  rf_imp_dsf <- data.frame(importance(rfFit_dsf$finalModel))
+
+  # obtain 6 microbes with highest importance
+  # rf_imp_ds |>
+    # mutate(ASV = rownames(rf_imp_ds))#|>
+    # arrange(desc(MeanDecreaseGini)) |>
+    # head(6)
+  
+  # saving ASV to object
+  asv_imp_dsf <- rf_imp_dsf %>% 
+    mutate(ASV = rownames(.)) %>% 
+    arrange(desc(MeanDecreaseGini)) %>% 
+    head(6) %>% 
+    pull(ASV)
+  
+  asv_imp_dsf <- gsub("\\.", "_", asv_imp_dsf)
+  asv_imp_dsf
+```
+
+
+```{r rf_9.3, echo = TRUE, warning=FALSE, message=FALSE, eval=TRUE}
+  # get microbial abundance
+  #imp_abd_asv <- data.frame(t(otu_table(dia_asv)[asv_imp, ]))
+  imp_abd_asv_dsf <- data.frame(t(otu_table(dsf_asv)[asv_imp_dsf, ])) ##debug
+  #asv_imp_ds=NULL 
+  
+  asv_imp_dsf <- gsub("\\|", "\\_", asv_imp_dsf)
+  # combine with sample data
+  imp_df_asv_dsf <- data.frame(sample_data(dsf_asv)) %>% 
+    cbind(imp_abd_asv_dsf) %>% 
+    pivot_longer(cols = asv_imp_dsf, names_to = "ASV", values_to = "Abundance")
+  
+  taxa_dsf <- as.data.frame(taxa_dsf)
+  taxa_dsf$ASV <- gsub("\\|", "\\_", rownames(taxa_dsf))
+  taxa_dsf$ASV <- gsub(" ", "\\_", rownames(taxa_dsf))
+  taxa_dsf$ASV <- gsub(":", "\\_", rownames(taxa_dsf))
+  taxa_dsf$ASV <- gsub("-", "\\_", rownames(taxa_dsf))
+  taxa_dsf$ASV <- gsub(",", "\\_", rownames(taxa_dsf))
+  taxa_dsf$ASV <- gsub("\\(", "\\_", rownames(taxa_dsf))
+  taxa_dsf$ASV <- gsub("\\)", "\\_", rownames(taxa_dsf))
+                       
+  # plotting
+  ggplot(imp_df_asv_dsf, aes(x = Abundance)) + 
+    geom_density(aes(fill = Disease),
+                alpha = 0.5) +
+    facet_wrap(~ASV, scales = "free") +
+    labs(title = "Pathway Abundance of Discriminative Species",
+       x = "Pathway Abundance",
+       y = "Density of samples",
+       fill = "Disease") +
+    scale_y_log10()+
+    theme_minimal()
+```
